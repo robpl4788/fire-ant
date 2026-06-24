@@ -11,6 +11,7 @@ use rp235x_hal::{self as hal, entry};
 use rp235x_hal::{Clock, pac};
 
 mod drivers;
+pub mod utils;
 
 use drivers::rgb_led;
 
@@ -54,7 +55,7 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    let mut pwm = Slices::new(pac.PWM, &mut pac.RESETS);
+    let pwm = Slices::new(pac.PWM, &mut pac.RESETS);
     let mut red_green_slice = pwm.pwm0;
     let mut blue_lphase_slice = pwm.pwm1;
 
@@ -70,11 +71,11 @@ fn main() -> ! {
     let mut green_channel = red_green_slice.channel_b;
     let mut blue_channel = blue_lphase_slice.channel_a;
 
-    let mut blue_pin = blue_channel.output_to(pins.gpio18);
-    let mut green_pin = green_channel.output_to(pins.gpio17);
-    let mut red_pin = red_channel.output_to(pins.gpio16);
+    let _blue_pin = blue_channel.output_to(pins.gpio18);
+    let _green_pin = green_channel.output_to(pins.gpio17);
+    let _red_pin = red_channel.output_to(pins.gpio16);
 
-    let mut rgb = rgb_led::RGBLed::new(red_channel, green_channel, blue_channel, led_top, true);
+    let mut rgb = rgb_led::RGBLed::new(red_channel, green_channel, blue_channel);
 
     let mut x = 0.;
     let mut direction = 0.05;
