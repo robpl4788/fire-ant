@@ -80,7 +80,7 @@ impl Logger {
         self.all_series.push(Series::new(key, value)).unwrap();
     }
 
-    pub fn get_data(&mut self) {
+    pub fn get_data(&mut self) -> [u8; 256] {
         let mut data = String::<256>::new();
 
         write!(data, "{{\"all_series\":[").unwrap();
@@ -98,9 +98,17 @@ impl Logger {
         }
 
         write!(data, "]}}\n").unwrap();
-        info!("{}", data.as_str());
+        // info!("{}", data.as_str());
 
         self.all_series.clear();
+
+        let mut buf = [0u8; 256];
+        let bytes = data.as_bytes();
+
+        let len = bytes.len().min(256);
+        buf[..len].copy_from_slice(&bytes[..len]);
+
+        buf
     }
 }
 

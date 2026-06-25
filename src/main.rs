@@ -4,13 +4,19 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::adc::{Adc, Channel, Config as AdcConfig, InterruptHandler};
+use embassy_rp::adc::{Adc, Channel, Config as AdcConfig, InterruptHandler as ADCInterruptHandler};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::ClockConfig;
 use embassy_rp::config::Config as RpConfig;
 use embassy_rp::gpio::Pull;
+use embassy_rp::peripherals::USB;
+use embassy_rp::usb::{Driver, Instance, InterruptHandler};
 use embassy_time::Timer;
+use embassy_usb::UsbDevice;
+use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
+use embassy_usb::driver::EndpointError;
 use panic_probe as _;
+use static_cell::StaticCell;
 
 mod drivers;
 pub mod utils;
@@ -20,27 +26,75 @@ use crate::drivers::logger::LOGGER;
 use v2_control_board::FireAntBoard;
 
 bind_interrupts!(
-    struct Irqs {
-        ADC_IRQ_FIFO => InterruptHandler;
+    struct ADCIrqs {
+        ADC_IRQ_FIFO => ADCInterruptHandler;
     }
 );
 
-#[embassy_executor::task]
-async fn output_logs() {
-    loop {
-        {
-            let mut logger = LOGGER.lock().await;
-            logger.get_data();
-        }
-        Timer::after_millis(1000).await;
-    }
-}
+bind_interrupts!(struct Irqs {
+    USBCTRL_IRQ => InterruptHandler<USB>;
+});
 
 #[embassy_executor::task]
 async fn run_motor(mut board: FireAntBoard) {
     loop {
         board.bldc.progress();
         Timer::after_millis(10).await;
+    }
+}
+
+type MyUsbDriver = Driver<'static, USB>;
+type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
+
+#[embassy_executor::task]
+async fn usb_task(mut usb: MyUsbDevice) -> ! {
+    usb.run().await
+}
+
+#[embassy_executor::task]
+async fn usb_monitor(mut class: CdcAcmClass<'static, Driver<'static, USB>>) {
+    // Do stuff with the class!
+    loop {
+        class.wait_connection().await;
+        info!("Connected");
+        let _ = log(&mut class).await;
+        info!("Disconnected");
+    }
+}
+
+struct Disconnected {}
+
+impl From<EndpointError> for Disconnected {
+    fn from(val: EndpointError) -> Self {
+        match val {
+            EndpointError::BufferOverflow => defmt::panic!("Buffer overflow"),
+            EndpointError::Disabled => Disconnected {},
+        }
+    }
+}
+
+async fn log<'d, T: Instance + 'd>(
+    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
+) -> Result<(), Disconnected> {
+    loop {
+        Timer::after_millis(20).await;
+        let data: [u8; 256];
+        {
+            let mut logger = LOGGER.lock().await;
+            data = logger.get_data();
+        }
+
+        // Split data into parts to fit in usb buffer
+        let a = &data[0..64];
+        let b = &data[64..128];
+        let c = &data[128..192];
+        let d = &data[192..256];
+
+        class.write_packet(&a).await?;
+        class.write_packet(&b).await?;
+        class.write_packet(&c).await?;
+        class.write_packet(&d).await?;
+        class.write_packet(&[]).await?; // Flush the terminal
     }
 }
 
@@ -69,13 +123,59 @@ async fn main(_spawner: Spawner) {
         p.PIN_14,
         p.PIN_15,
     );
+
+    // Create the driver, from the HAL.
+    let usb_driver = Driver::new(p.USB, Irqs);
+
+    // Create embassy-usb Config
+    let config = {
+        let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
+        config.manufacturer = Some("Embassy");
+        config.product = Some("USB-serial example");
+        config.serial_number = Some("12345678");
+        config.max_power = 100;
+        config.max_packet_size_0 = 64;
+        config
+    };
+
+    // Create embassy-usb DeviceBuilder using the driver and config.
+    // It needs some buffers for building the descriptors.
+    let mut builder = {
+        static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+        static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+        static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+        let builder = embassy_usb::Builder::new(
+            usb_driver,
+            config,
+            CONFIG_DESCRIPTOR.init([0; 256]),
+            BOS_DESCRIPTOR.init([0; 256]),
+            &mut [], // no msos descriptors
+            CONTROL_BUF.init([0; 64]),
+        );
+        builder
+    };
+
+    // Create classes on the builder.
+    let class: CdcAcmClass<'_, Driver<'_, USB>> = {
+        static STATE: StaticCell<State> = StaticCell::new();
+        let state = STATE.init(State::new());
+        CdcAcmClass::new(&mut builder, state, 64)
+    };
+
+    // Build the builder.
+    let usb = builder.build();
+
+    // Run the USB device.
+    _spawner.spawn(unwrap!(usb_task(usb)));
+    _spawner.spawn(unwrap!(usb_monitor(class)));
+
     board.rgb.green();
 
-    _spawner.spawn(output_logs().unwrap());
     board.bldc.disable();
     // _spawner.spawn(run_motor(board).unwrap());
 
-    let mut adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
+    let mut adc = Adc::new(p.ADC, ADCIrqs, AdcConfig::default());
     let mut adc_pin_0 = Channel::new_pin(p.PIN_29, Pull::None);
 
     loop {

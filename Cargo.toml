@@ -27,6 +27,8 @@ defmt = "1"
 defmt-rtt = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
 heapless = "0.9.3"
+embassy-usb = "0.6.0"
+static_cell = "2.1.1"
 
 # We're using a Pico 2 by default on this template
 #rp-pico2 = "0.9" # TODO: Do we have that crate already ?
