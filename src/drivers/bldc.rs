@@ -2,6 +2,7 @@ use embedded_hal::pwm::SetDutyCycle;
 
 use crate::utils::SetDutyCycleExtras;
 
+/// Represents a motor phase with low and high-side MOSFET drivers
 struct Phase<Low, High>
 where
     Low: SetDutyCycle,
@@ -16,27 +17,60 @@ where
     Low: SetDutyCycle,
     High: SetDutyCycle,
 {
-    pub fn new(low: Low, high: High) -> Self {
+    fn new(low: Low, high: High) -> Self {
         Phase { low, high }
     }
 
-    pub fn disable(&mut self) {
+    fn disable(&mut self) {
         let _ = self.low.set_duty_cycle_fully_off();
         let _ = self.high.set_duty_cycle_fully_off();
     }
 
-    pub fn set_low(&mut self) {
+    fn set_low(&mut self) {
         let _ = self.high.set_duty_cycle_fully_off();
         let _ = self.low.set_duty_cycle_fully_on();
     }
 
-    pub fn set_high(&mut self, power: f32) {
-        // Prevent full power to avoid draining bootstrap capacitor too quickly and causing brownout
+    fn set_high(&mut self, power: f32) {
+        // Prevent full power to avoid draining bootstrap capacitor too quickly
         let power = power.clamp(0., 0.9);
         let _ = self.low.set_duty_cycle_fully_off();
         let _ = self.high.set_duty_normalised(power);
     }
 }
+
+/// 6-phase commutation state for 3-phase BLDC motor
+#[derive(Clone, Copy, Debug)]
+enum CommutationState {
+    /// Phase A high, Phase B low
+    State0,
+    /// Phase A high, Phase C low
+    State1,
+    /// Phase B high, Phase C low
+    State2,
+    /// Phase B high, Phase A low
+    State3,
+    /// Phase C high, Phase A low
+    State4,
+    /// Phase C high, Phase B low
+    State5,
+}
+
+impl CommutationState {
+    /// Get the next commutation state
+    fn next(self) -> Self {
+        match self {
+            CommutationState::State0 => CommutationState::State1,
+            CommutationState::State1 => CommutationState::State2,
+            CommutationState::State2 => CommutationState::State3,
+            CommutationState::State3 => CommutationState::State4,
+            CommutationState::State4 => CommutationState::State5,
+            CommutationState::State5 => CommutationState::State0,
+        }
+    }
+}
+
+/// BLDC motor controller with 6-phase commutation
 pub struct BLDC<ALow, BLow, CLow, AHigh, BHigh, CHigh>
 where
     ALow: SetDutyCycle,
@@ -49,8 +83,8 @@ where
     a_phase: Phase<ALow, AHigh>,
     b_phase: Phase<BLow, BHigh>,
     c_phase: Phase<CLow, CHigh>,
-
-    phase_state: u8,
+    state: CommutationState,
+    power: f32,
 }
 
 impl<ALow, BLow, CLow, AHigh, BHigh, CHigh> BLDC<ALow, BLow, CLow, AHigh, BHigh, CHigh>
@@ -74,12 +108,11 @@ where
             a_phase: Phase::new(a_low, a_high),
             b_phase: Phase::new(b_low, b_high),
             c_phase: Phase::new(c_low, c_high),
-
-            phase_state: 0,
+            state: CommutationState::State0,
+            power: 0.0,
         };
 
         bldc.disable();
-
         bldc
     }
 
@@ -89,47 +122,51 @@ where
         self.c_phase.disable();
     }
 
-    pub fn progress(&mut self) {
-        self.phase_state = (self.phase_state + 1) % 6;
-        self.set_state(self.phase_state, 0.1);
+    /// Advance to the next commutation state
+    pub fn progress(&mut self, power: f32) {
+        self.state = self.state.next();
+        self.set_power(power);
     }
 
-    pub fn set_state(&mut self, state: u8, power: f32) {
-        let power = power.clamp(0., 1.);
-
-        self.phase_state = state;
-        match state {
-            0 => {
+    /// Apply commutation pattern for the current state
+    fn apply_commutation(&mut self, power: f32) {
+        match self.state {
+            CommutationState::State0 => {
                 self.a_phase.set_high(power);
                 self.b_phase.set_low();
                 self.c_phase.disable();
             }
-            1 => {
+            CommutationState::State1 => {
                 self.a_phase.set_high(power);
                 self.b_phase.disable();
                 self.c_phase.set_low();
             }
-            2 => {
+            CommutationState::State2 => {
                 self.a_phase.disable();
                 self.b_phase.set_high(power);
                 self.c_phase.set_low();
             }
-            3 => {
+            CommutationState::State3 => {
                 self.a_phase.set_low();
                 self.b_phase.set_high(power);
                 self.c_phase.disable();
             }
-            4 => {
+            CommutationState::State4 => {
                 self.a_phase.set_low();
                 self.b_phase.disable();
                 self.c_phase.set_high(power);
             }
-            5 => {
+            CommutationState::State5 => {
                 self.a_phase.disable();
                 self.b_phase.set_low();
                 self.c_phase.set_high(power);
             }
-            _ => panic!(),
         }
+    }
+
+    /// Set motor power (0.0 to 1.0)
+    pub fn set_power(&mut self, power: f32) {
+        let power = power.clamp(0., 0.9);
+        self.apply_commutation(power);
     }
 }

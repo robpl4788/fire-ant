@@ -10,9 +10,8 @@ use embassy_rp::clocks::ClockConfig;
 use embassy_rp::config::Config as RpConfig;
 use embassy_rp::gpio::Pull;
 use embassy_rp::peripherals::USB;
-use embassy_rp::usb::{Driver, Instance, InterruptHandler};
+use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_time::Timer;
-use embassy_usb::UsbDevice;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use panic_probe as _;
@@ -23,171 +22,183 @@ pub mod utils;
 mod v2_control_board;
 
 use crate::drivers::logger::LOGGER;
-use v2_control_board::FireAntBoard;
+use crate::v2_control_board::FireAntBoard;
+use v2_control_board::FireAntBoardBuilder;
 
-bind_interrupts!(
-    struct ADCIrqs {
-        ADC_IRQ_FIFO => ADCInterruptHandler;
-    }
-);
+// Timing constants
+const ADC_INTERVAL_MS: u64 = 1;
+const LOG_INTERVAL_MS: u64 = 20;
+const MOTOR_INTERVAL_MS: u64 = 10;
+const USB_BUFFER_SIZE: usize = 64;
+const USB_PACKET_COUNT: usize = 4;
 
-bind_interrupts!(struct Irqs {
-    USBCTRL_IRQ => InterruptHandler<USB>;
-});
+// USB configuration constants
+const USB_VID: u16 = 0xc0de;
+const USB_PID: u16 = 0xcafe;
+const USB_MANUFACTURER: &str = "Embassy";
+const USB_PRODUCT: &str = "USB-serial example";
+const USB_SERIAL: &str = "12345678";
+const USB_MAX_POWER: u16 = 100;
+const USB_MAX_PACKET_SIZE: u8 = 64;
+
+bind_interrupts!(struct ADCIrqs { ADC_IRQ_FIFO => ADCInterruptHandler; });
+bind_interrupts!(struct USBIrqs { USBCTRL_IRQ => InterruptHandler<USB>; });
+
+// Type aliases for cleaner signatures
+type UsbDriver = Driver<'static, USB>;
+type UsbDevice = embassy_usb::UsbDevice<'static, UsbDriver>;
+type UsbCdcClass = CdcAcmClass<'static, UsbDriver>;
 
 #[embassy_executor::task]
-async fn run_motor(mut board: FireAntBoard) {
-    loop {
-        board.bldc.progress();
-        Timer::after_millis(10).await;
-    }
-}
-
-type MyUsbDriver = Driver<'static, USB>;
-type MyUsbDevice = UsbDevice<'static, MyUsbDriver>;
-
-#[embassy_executor::task]
-async fn usb_task(mut usb: MyUsbDevice) -> ! {
+async fn usb_task(mut usb: UsbDevice) {
     usb.run().await
 }
 
 #[embassy_executor::task]
-async fn usb_monitor(mut class: CdcAcmClass<'static, Driver<'static, USB>>) {
-    // Do stuff with the class!
+async fn run_motor(mut board: FireAntBoard) {
+    loop {
+        board.bldc.progress(0.1);
+        Timer::after_millis(MOTOR_INTERVAL_MS).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn usb_monitor(mut class: UsbCdcClass) {
     loop {
         class.wait_connection().await;
-        info!("Connected");
-        let _ = log(&mut class).await;
-        info!("Disconnected");
+        info!("USB connected");
+        let _ = usb_log_task(&mut class).await;
+        info!("USB disconnected");
     }
 }
 
-struct Disconnected {}
+/// Disconnected state for USB endpoint errors
+#[derive(Debug)]
+struct Disconnected;
 
 impl From<EndpointError> for Disconnected {
-    fn from(val: EndpointError) -> Self {
-        match val {
-            EndpointError::BufferOverflow => defmt::panic!("Buffer overflow"),
-            EndpointError::Disabled => Disconnected {},
+    fn from(err: EndpointError) -> Self {
+        match err {
+            EndpointError::BufferOverflow => defmt::panic!("USB buffer overflow"),
+            EndpointError::Disabled => Disconnected,
         }
     }
 }
 
-async fn log<'d, T: Instance + 'd>(
-    class: &mut CdcAcmClass<'d, Driver<'d, T>>,
-) -> Result<(), Disconnected> {
+/// Log data via USB, splitting large buffers into USB packet-sized chunks
+async fn usb_log_task(class: &mut UsbCdcClass) -> Result<(), Disconnected> {
     loop {
-        Timer::after_millis(20).await;
-        let data: [u8; 256];
-        {
+        Timer::after_millis(LOG_INTERVAL_MS).await;
+
+        let data = {
             let mut logger = LOGGER.lock().await;
-            data = logger.get_data();
+            logger.get_data()
+        };
+
+        // Send data in USB_BUFFER_SIZE chunks
+        for chunk in data.chunks(USB_BUFFER_SIZE) {
+            class.write_packet(chunk).await?;
         }
 
-        // Split data into parts to fit in usb buffer
-        let a = &data[0..64];
-        let b = &data[64..128];
-        let c = &data[128..192];
-        let d = &data[192..256];
-
-        class.write_packet(&a).await?;
-        class.write_packet(&b).await?;
-        class.write_packet(&c).await?;
-        class.write_packet(&d).await?;
-        class.write_packet(&[]).await?; // Flush the terminal
+        class.write_packet(&[]).await?; // Flush
     }
+}
+
+/// Initialize USB device and CDC class with embassy defaults
+fn setup_usb_device(usb_driver: UsbDriver) -> (UsbDevice, UsbCdcClass) {
+    let config = {
+        let mut cfg = embassy_usb::Config::new(USB_VID, USB_PID);
+        cfg.manufacturer = Some(USB_MANUFACTURER);
+        cfg.product = Some(USB_PRODUCT);
+        cfg.serial_number = Some(USB_SERIAL);
+        cfg.max_power = USB_MAX_POWER;
+        cfg.max_packet_size_0 = USB_MAX_PACKET_SIZE;
+        cfg
+    };
+
+    let mut builder = {
+        static CONFIG_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+        static BOS_DESC: StaticCell<[u8; 256]> = StaticCell::new();
+        static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
+
+        embassy_usb::Builder::new(
+            usb_driver,
+            config,
+            CONFIG_DESC.init([0; 256]),
+            BOS_DESC.init([0; 256]),
+            &mut [],
+            CONTROL_BUF.init([0; 64]),
+        )
+    };
+
+    let class = {
+        static STATE: StaticCell<State> = StaticCell::new();
+        CdcAcmClass::new(
+            &mut builder,
+            STATE.init(State::new()),
+            USB_BUFFER_SIZE as u16,
+        )
+    };
+
+    let usb_device = builder.build();
+    (usb_device, class)
 }
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
-    info!("Program start");
+async fn main(spawner: Spawner) {
+    info!("Fire Ant Control Board starting...");
 
+    // Initialize hardware
     let mut config = RpConfig::default();
     config.clocks = ClockConfig::crystal(12_000_000);
+    let peripherals = embassy_rp::init(config);
 
-    let p = embassy_rp::init(config);
+    // Setup board components
+    let mut board = FireAntBoardBuilder::new()
+        .with_rgb_pwm(
+            peripherals.PWM_SLICE0,
+            peripherals.PIN_16,
+            peripherals.PIN_17,
+            peripherals.PWM_SLICE1,
+            peripherals.PIN_18,
+        )
+        .with_bldc_phases(
+            peripherals.PWM_SLICE5,
+            peripherals.PIN_10,
+            peripherals.PIN_11,
+            peripherals.PWM_SLICE6,
+            peripherals.PIN_12,
+            peripherals.PIN_13,
+            peripherals.PWM_SLICE7,
+            peripherals.PIN_14,
+            peripherals.PIN_15,
+        )
+        .build();
 
-    let mut board = FireAntBoard::new(
-        p.PWM_SLICE0,
-        p.PIN_16,
-        p.PIN_17,
-        p.PWM_SLICE1,
-        p.PIN_18,
-        p.PWM_SLICE5,
-        p.PIN_10,
-        p.PIN_11,
-        p.PWM_SLICE6,
-        p.PIN_12,
-        p.PIN_13,
-        p.PWM_SLICE7,
-        p.PIN_14,
-        p.PIN_15,
-    );
+    // Setup USB
+    let usb_driver = Driver::new(peripherals.USB, USBIrqs);
+    let (usb_device, usb_class) = setup_usb_device(usb_driver);
 
-    // Create the driver, from the HAL.
-    let usb_driver = Driver::new(p.USB, Irqs);
-
-    // Create embassy-usb Config
-    let config = {
-        let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
-        config.manufacturer = Some("Embassy");
-        config.product = Some("USB-serial example");
-        config.serial_number = Some("12345678");
-        config.max_power = 100;
-        config.max_packet_size_0 = 64;
-        config
-    };
-
-    // Create embassy-usb DeviceBuilder using the driver and config.
-    // It needs some buffers for building the descriptors.
-    let mut builder = {
-        static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-        static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-        static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-
-        let builder = embassy_usb::Builder::new(
-            usb_driver,
-            config,
-            CONFIG_DESCRIPTOR.init([0; 256]),
-            BOS_DESCRIPTOR.init([0; 256]),
-            &mut [], // no msos descriptors
-            CONTROL_BUF.init([0; 64]),
-        );
-        builder
-    };
-
-    // Create classes on the builder.
-    let class: CdcAcmClass<'_, Driver<'_, USB>> = {
-        static STATE: StaticCell<State> = StaticCell::new();
-        let state = STATE.init(State::new());
-        CdcAcmClass::new(&mut builder, state, 64)
-    };
-
-    // Build the builder.
-    let usb = builder.build();
-
-    // Run the USB device.
-    _spawner.spawn(unwrap!(usb_task(usb)));
-    _spawner.spawn(unwrap!(usb_monitor(class)));
+    spawner.spawn(usb_task(usb_device).expect("Failed to create USB task"));
+    spawner.spawn(usb_monitor(usb_class).expect("Failed to create USB monitor task"));
 
     board.rgb.green();
 
-    board.bldc.disable();
-    // _spawner.spawn(run_motor(board).unwrap());
+    // Main control loop: ADC sampling
+    let mut adc = Adc::new(peripherals.ADC, ADCIrqs, AdcConfig::default());
+    let mut adc_pin = Channel::new_pin(peripherals.PIN_29, Pull::None);
 
-    let mut adc = Adc::new(p.ADC, ADCIrqs, AdcConfig::default());
-    let mut adc_pin_0 = Channel::new_pin(p.PIN_29, Pull::None);
+    board.bldc.disable();
+    // spawner.spawn(run_motor(board).expect("Failed to create USB monitor task"));
 
     loop {
-        Timer::after_millis(1).await;
-        // board.bldc.disable();
-        // board.bldc.progress();
-        let pin_adc_counts = adc.read(&mut adc_pin_0).await.unwrap();
+        Timer::after_millis(ADC_INTERVAL_MS).await;
 
-        let current = (pin_adc_counts as f32 - 2048.0) / 2048.0 * 30.0;
+        let adc_raw = adc.read(&mut adc_pin).await.unwrap();
+        let current_amps = (adc_raw as f32 - 2048.0) / 2048.0 * 30.0;
+
         let mut logger = LOGGER.lock().await;
-        logger.log_value("current", current);
-        // let info!("ADC counts: {}", pin_adc_counts);
+        logger.log_value("current", current_amps);
     }
 }
 
