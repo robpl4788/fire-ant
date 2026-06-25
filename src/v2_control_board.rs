@@ -1,22 +1,24 @@
 use crate::drivers::{bldc, rgb_led};
-use rp235x_hal::gpio::{FunctionNull, Pin, Pins, PullDown, bank0::Gpio29};
-use rp235x_hal::pwm::{
-    A, B, Channel, FreeRunning, Pwm0, Pwm1, Pwm5, Pwm6, Pwm7, Slice, SliceId, Slices,
+use embassy_rp::Peri;
+use embassy_rp::peripherals::{
+    PIN_10, PIN_11, PIN_12, PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PWM_SLICE0, PWM_SLICE1,
+    PWM_SLICE5, PWM_SLICE6, PWM_SLICE7,
 };
+use embassy_rp::pwm::{Config, Pwm, PwmOutput};
 
-pub type RGBRed = Channel<Slice<Pwm0, FreeRunning>, A>;
-pub type RGBGreen = Channel<Slice<Pwm0, FreeRunning>, B>;
-pub type RGBBlue = Channel<Slice<Pwm1, FreeRunning>, A>;
+pub type RGBRed = PwmOutput<'static>;
+pub type RGBGreen = PwmOutput<'static>;
+pub type RGBBlue = PwmOutput<'static>;
 
 pub type RGBLed = crate::drivers::rgb_led::RGBLed<RGBRed, RGBGreen, RGBBlue>;
 
-pub type BLDCLowC = Channel<Slice<Pwm5, FreeRunning>, A>;
-pub type BLDCLowB = Channel<Slice<Pwm5, FreeRunning>, B>;
-pub type BLDCLowA = Channel<Slice<Pwm6, FreeRunning>, A>;
+pub type BLDCLowC = PwmOutput<'static>;
+pub type BLDCLowB = PwmOutput<'static>;
+pub type BLDCLowA = PwmOutput<'static>;
 
-pub type BLDCHighC = Channel<Slice<Pwm6, FreeRunning>, B>;
-pub type BLDCHighB = Channel<Slice<Pwm7, FreeRunning>, A>;
-pub type BLDCHighA = Channel<Slice<Pwm7, FreeRunning>, B>;
+pub type BLDCHighC = PwmOutput<'static>;
+pub type BLDCHighB = PwmOutput<'static>;
+pub type BLDCHighA = PwmOutput<'static>;
 
 pub type BLDC =
     crate::drivers::bldc::BLDC<BLDCLowA, BLDCLowB, BLDCLowC, BLDCHighA, BLDCHighB, BLDCHighC>;
@@ -30,61 +32,58 @@ pub struct FireAntBoard {
 }
 
 impl FireAntBoard {
-    pub fn new(pwm: Slices, mut pins: Pins) -> (Self, Pin<Gpio29, FunctionNull, PullDown>) {
-        fn configure_slice<T: SliceId>(slice: &mut Slice<T, FreeRunning>, top: u16) {
-            slice.set_top(top);
-            slice.enable();
-        }
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        pwm0: Peri<'static, PWM_SLICE0>,
+        gpio16: Peri<'static, PIN_16>,
+        gpio17: Peri<'static, PIN_17>,
+        pwm1: Peri<'static, PWM_SLICE1>,
+        gpio18: Peri<'static, PIN_18>,
+        pwm5: Peri<'static, PWM_SLICE5>,
+        gpio10: Peri<'static, PIN_10>,
+        gpio11: Peri<'static, PIN_11>,
+        pwm6: Peri<'static, PWM_SLICE6>,
+        gpio12: Peri<'static, PIN_12>,
+        gpio13: Peri<'static, PIN_13>,
+        pwm7: Peri<'static, PWM_SLICE7>,
+        gpio14: Peri<'static, PIN_14>,
+        gpio15: Peri<'static, PIN_15>,
+    ) -> Self {
+        let mut led_config = Config::default();
+        led_config.top = LED_TOP;
 
-        let gpio29 = pins.gpio29;
+        let red_green_pwm = Pwm::new_output_ab(pwm0, gpio16, gpio17, led_config.clone());
+        let blue_pwm = Pwm::new_output_a(pwm1, gpio18, led_config);
 
-        let mut red_green_slice = pwm.pwm0;
-        let mut blue_lphase_slice = pwm.pwm1;
+        let (red_channel, green_channel) = red_green_pwm.split();
+        let (blue_channel, _) = blue_pwm.split();
 
-        configure_slice(&mut red_green_slice, LED_TOP);
-        configure_slice(&mut blue_lphase_slice, LED_TOP);
-
-        let mut red_channel: RGBRed = red_green_slice.channel_a;
-        let mut green_channel: RGBGreen = red_green_slice.channel_b;
-        let mut blue_channel: RGBBlue = blue_lphase_slice.channel_a;
-
-        let _ = blue_channel.output_to(pins.gpio18);
-        let _ = green_channel.output_to(pins.gpio17);
-        let _ = red_channel.output_to(pins.gpio16);
-
-        let rgb = rgb_led::RGBLed::new(red_channel, green_channel, blue_channel);
-
-        let mut lowc_lowb_slice = pwm.pwm5;
-        let mut lowa_highc_slice = pwm.pwm6;
-        let mut highb_highc_slice = pwm.pwm7;
-
-        configure_slice(&mut lowc_lowb_slice, BLDC_TOP);
-        configure_slice(&mut lowa_highc_slice, BLDC_TOP);
-        configure_slice(&mut highb_highc_slice, BLDC_TOP);
-
-        let mut lowc_channel = lowc_lowb_slice.channel_a;
-        let mut lowb_channel = lowc_lowb_slice.channel_b;
-        let mut lowa_channel = lowa_highc_slice.channel_a;
-        let mut highc_channel = lowa_highc_slice.channel_b;
-        let mut highb_channel = highb_highc_slice.channel_a;
-        let mut higha_channel = highb_highc_slice.channel_b;
-
-        let _ = lowc_channel.output_to(pins.gpio10);
-        let _ = lowb_channel.output_to(pins.gpio11);
-        let _ = lowa_channel.output_to(pins.gpio12);
-        let _ = highc_channel.output_to(pins.gpio13);
-        let _ = highb_channel.output_to(pins.gpio14);
-        let _ = higha_channel.output_to(pins.gpio15);
-
-        let bldc = bldc::BLDC::new(
-            lowa_channel,
-            lowb_channel,
-            lowc_channel,
-            higha_channel,
-            highb_channel,
-            highc_channel,
+        let rgb = rgb_led::RGBLed::new(
+            red_channel.unwrap(),
+            green_channel.unwrap(),
+            blue_channel.unwrap(),
         );
 
-        (Self { rgb, bldc }, gpio29)
+        let mut bldc_config = Config::default();
+        bldc_config.top = BLDC_TOP;
+
+        let lowc_lowb_pwm = Pwm::new_output_ab(pwm5, gpio10, gpio11, bldc_config.clone());
+        let lowa_highc_pwm = Pwm::new_output_ab(pwm6, gpio12, gpio13, bldc_config.clone());
+        let highb_higha_pwm = Pwm::new_output_ab(pwm7, gpio14, gpio15, bldc_config);
+
+        let (lowc_channel, lowb_channel) = lowc_lowb_pwm.split();
+        let (lowa_channel, highc_channel) = lowa_highc_pwm.split();
+        let (highb_channel, higha_channel) = highb_higha_pwm.split();
+
+        let bldc = bldc::BLDC::new(
+            lowa_channel.unwrap(),
+            lowb_channel.unwrap(),
+            lowc_channel.unwrap(),
+            higha_channel.unwrap(),
+            highb_channel.unwrap(),
+            highc_channel.unwrap(),
+        );
+
+        Self { rgb, bldc }
     }
 }

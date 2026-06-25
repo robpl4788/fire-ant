@@ -21,20 +21,20 @@ where
     }
 
     pub fn disable(&mut self) {
-        self.low.set_duty_cycle_fully_off();
-        self.high.set_duty_cycle_fully_off();
+        let _ = self.low.set_duty_cycle_fully_off();
+        let _ = self.high.set_duty_cycle_fully_off();
     }
 
     pub fn set_low(&mut self) {
-        self.high.set_duty_cycle_fully_off();
-        self.low.set_duty_cycle_fully_on();
+        let _ = self.high.set_duty_cycle_fully_off();
+        let _ = self.low.set_duty_cycle_fully_on();
     }
 
     pub fn set_high(&mut self, power: f32) {
         // Prevent full power to avoid draining bootstrap capacitor too quickly and causing brownout
         let power = power.clamp(0., 0.9);
-        self.low.set_duty_cycle_fully_off();
-        self.high.set_duty_normalised(power);
+        let _ = self.low.set_duty_cycle_fully_off();
+        let _ = self.high.set_duty_normalised(power);
     }
 }
 pub struct BLDC<ALow, BLow, CLow, AHigh, BHigh, CHigh>

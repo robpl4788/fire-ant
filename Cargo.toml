@@ -8,6 +8,19 @@ license = "MIT OR Apache-2.0"
 cortex-m = "0.7"
 cortex-m-rt = "0.7"
 embedded-hal = { version = "1.0.0" }
+embassy-executor = { version = "0.10", features = [
+    "platform-cortex-m",
+    "executor-thread",
+    "defmt",
+] }
+embassy-rp = { version = "0.10", features = [
+    "defmt",
+    "time-driver",
+    "critical-section-impl",
+    "rp235xa",
+    "binary-info",
+] }
+embassy-time = { version = "0.5", features = ["defmt"] }
 
 defmt = "1"
 defmt-rtt = "1"
@@ -15,13 +28,6 @@ panic-probe = { version = "1", features = ["print-defmt"] }
 
 # We're using a Pico 2 by default on this template
 #rp-pico2 = "0.9" # TODO: Do we have that crate already ?
-
-# If you're not going to use a Board Support Package you'll need these:
-rp235x-hal = { version = "0.3", features = [
-    "rt",
-    "critical-section-impl",
-    "binary-info",
-] }
 
 # cargo build/run
 [profile.dev]

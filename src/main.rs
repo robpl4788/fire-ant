@@ -1,15 +1,16 @@
 #![no_std]
 #![no_main]
 
-use cortex_m::prelude::_embedded_hal_adc_OneShot;
 use defmt::*;
 use defmt_rtt as _;
+use embassy_executor::Spawner;
+use embassy_rp::adc::{Adc, Channel, Config as AdcConfig, InterruptHandler};
+use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::ClockConfig;
+use embassy_rp::config::Config as RpConfig;
+use embassy_rp::gpio::Pull;
+use embassy_time::Timer;
 use panic_probe as _;
-use rp235x_hal::adc::AdcPin;
-use rp235x_hal::clocks::init_clocks_and_plls;
-use rp235x_hal::pwm::Slices;
-use rp235x_hal::{self as hal, Adc, entry};
-use rp235x_hal::{Clock, pac};
 
 mod drivers;
 pub mod utils;
@@ -17,67 +18,46 @@ mod v2_control_board;
 
 use v2_control_board::FireAntBoard;
 
-/// Tell the Boot ROM about our application
-#[unsafe(link_section = ".start_block")]
-#[used]
-pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
+bind_interrupts!(
+    struct Irqs {
+        ADC_IRQ_FIFO => InterruptHandler;
+    }
+);
 
-#[entry]
-fn main() -> ! {
+#[embassy_executor::main]
+async fn main(_spawner: Spawner) {
     info!("Program start");
-    let mut pac = pac::Peripherals::take().unwrap();
-    let core = cortex_m::Peripherals::take().unwrap();
-    let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
-    let sio = hal::Sio::new(pac.SIO);
 
-    // External high-speed crystal on the fire ant control board is 12Mhz
-    let external_xtal_freq_hz = 12_000_000u32;
-    let clocks = init_clocks_and_plls(
-        external_xtal_freq_hz,
-        pac.XOSC,
-        pac.CLOCKS,
-        pac.PLL_SYS,
-        pac.PLL_USB,
-        &mut pac.RESETS,
-        &mut watchdog,
-    )
-    .ok()
-    .unwrap();
+    let mut config = RpConfig::default();
+    config.clocks = ClockConfig::crystal(12_000_000);
 
-    let mut delay = cortex_m::delay::Delay::new(core.SYST, clocks.system_clock.freq().to_Hz());
+    let p = embassy_rp::init(config);
 
-    let pins = hal::gpio::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
+    let mut board = FireAntBoard::new(
+        p.PWM_SLICE0,
+        p.PIN_16,
+        p.PIN_17,
+        p.PWM_SLICE1,
+        p.PIN_18,
+        p.PWM_SLICE5,
+        p.PIN_10,
+        p.PIN_11,
+        p.PWM_SLICE6,
+        p.PIN_12,
+        p.PIN_13,
+        p.PWM_SLICE7,
+        p.PIN_14,
+        p.PIN_15,
     );
 
-    let pwm = Slices::new(pac.PWM, &mut pac.RESETS);
-    let (mut board, gpio29) = FireAntBoard::new(pwm, pins);
-
-    let mut adc = Adc::new(pac.ADC, &mut pac.RESETS);
-    let mut adc_pin_0 = AdcPin::new(gpio29.into_floating_input()).unwrap();
-    adc.free_running(&adc_pin_0);
+    let mut adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
+    let mut adc_pin_0 = Channel::new_pin(p.PIN_29, Pull::None);
 
     board.rgb.green();
     loop {
         board.bldc.progress();
-        let pin_adc_counts: u16 = adc.read(&mut adc_pin_0).unwrap();
+        let pin_adc_counts = adc.read(&mut adc_pin_0).await.unwrap();
         info!("ADC counts: {}", pin_adc_counts);
-        delay.delay_ms(10);
+        Timer::after_millis(10).await;
     }
 }
-
-/// Program metadata for `picotool info`
-#[unsafe(link_section = ".bi_entries")]
-#[used]
-pub static PICOTOOL_ENTRIES: [rp235x_hal::binary_info::EntryAddr; 5] = [
-    rp235x_hal::binary_info::rp_cargo_bin_name!(),
-    rp235x_hal::binary_info::rp_cargo_version!(),
-    rp235x_hal::binary_info::rp_program_description!(c"Fire Ant Control Board"),
-    rp235x_hal::binary_info::rp_cargo_homepage_url!(),
-    rp235x_hal::binary_info::rp_program_build_attribute!(),
-];
-
-// End of file
