@@ -20,11 +20,13 @@ embassy-rp = { version = "0.10", features = [
     "rp235xa",
     "binary-info",
 ] }
+embassy-sync = { version = "0.8.0", default-features = false }
 embassy-time = { version = "0.5", features = ["defmt"] }
 
 defmt = "1"
 defmt-rtt = "1"
 panic-probe = { version = "1", features = ["print-defmt"] }
+heapless = "0.9.3"
 
 # We're using a Pico 2 by default on this template
 #rp-pico2 = "0.9" # TODO: Do we have that crate already ?

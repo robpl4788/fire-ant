@@ -16,6 +16,7 @@ mod drivers;
 pub mod utils;
 mod v2_control_board;
 
+use crate::drivers::logger::LOGGER;
 use v2_control_board::FireAntBoard;
 
 bind_interrupts!(
@@ -23,6 +24,25 @@ bind_interrupts!(
         ADC_IRQ_FIFO => InterruptHandler;
     }
 );
+
+#[embassy_executor::task]
+async fn output_logs() {
+    loop {
+        {
+            let mut logger = LOGGER.lock().await;
+            logger.get_data();
+        }
+        Timer::after_millis(1000).await;
+    }
+}
+
+#[embassy_executor::task]
+async fn run_motor(mut board: FireAntBoard) {
+    loop {
+        board.bldc.progress();
+        Timer::after_millis(10).await;
+    }
+}
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -49,17 +69,25 @@ async fn main(_spawner: Spawner) {
         p.PIN_14,
         p.PIN_15,
     );
+    board.rgb.green();
+
+    _spawner.spawn(output_logs().unwrap());
+    board.bldc.disable();
+    // _spawner.spawn(run_motor(board).unwrap());
 
     let mut adc = Adc::new(p.ADC, Irqs, AdcConfig::default());
     let mut adc_pin_0 = Channel::new_pin(p.PIN_29, Pull::None);
 
-    board.rgb.green();
     loop {
-        board.bldc.disable();
+        Timer::after_millis(1).await;
+        // board.bldc.disable();
         // board.bldc.progress();
         let pin_adc_counts = adc.read(&mut adc_pin_0).await.unwrap();
-        info!("ADC counts: {}", pin_adc_counts);
-        Timer::after_millis(10).await;
+
+        let current = (pin_adc_counts as f32 - 2048.0) / 2048.0 * 30.0;
+        let mut logger = LOGGER.lock().await;
+        logger.log_value("current", current);
+        // let info!("ADC counts: {}", pin_adc_counts);
     }
 }
 
