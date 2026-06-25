@@ -25,14 +25,16 @@ where
         self.high.set_duty_cycle_fully_off();
     }
 
-    pub fn set_low(&mut self, power: f32) {
+    pub fn set_low(&mut self) {
         self.high.set_duty_cycle_fully_off();
-        self.low.set_duty_normalised(power);
+        self.low.set_duty_cycle_fully_on();
     }
 
-    pub fn set_high(&mut self) {
+    pub fn set_high(&mut self, power: f32) {
+        // Prevent full power to avoid draining bootstrap capacitor too quickly and causing brownout
+        let power = power.clamp(0., 0.9);
         self.low.set_duty_cycle_fully_off();
-        self.high.set_duty_cycle_fully_on();
+        self.high.set_duty_normalised(power);
     }
 }
 pub struct BLDC<ALow, BLow, CLow, AHigh, BHigh, CHigh>
@@ -68,13 +70,17 @@ where
         b_high: BHigh,
         c_high: CHigh,
     ) -> Self {
-        Self {
+        let mut bldc = Self {
             a_phase: Phase::new(a_low, a_high),
             b_phase: Phase::new(b_low, b_high),
             c_phase: Phase::new(c_low, c_high),
 
             phase_state: 0,
-        }
+        };
+
+        bldc.disable();
+
+        bldc
     }
 
     pub fn disable(&mut self) {
@@ -83,40 +89,45 @@ where
         self.c_phase.disable();
     }
 
+    pub fn progress(&mut self) {
+        self.phase_state = (self.phase_state + 1) % 6;
+        self.set_state(self.phase_state, 0.1);
+    }
+
     pub fn set_state(&mut self, state: u8, power: f32) {
         let power = power.clamp(0., 1.);
 
         self.phase_state = state;
         match state {
             0 => {
-                self.a_phase.set_high();
-                self.b_phase.set_low(power);
+                self.a_phase.set_high(power);
+                self.b_phase.set_low();
                 self.c_phase.disable();
             }
             1 => {
-                self.a_phase.set_high();
+                self.a_phase.set_high(power);
                 self.b_phase.disable();
-                self.c_phase.set_low(power);
+                self.c_phase.set_low();
             }
             2 => {
                 self.a_phase.disable();
-                self.b_phase.set_high();
-                self.c_phase.set_low(power);
+                self.b_phase.set_high(power);
+                self.c_phase.set_low();
             }
             3 => {
-                self.a_phase.set_low(power);
-                self.b_phase.set_high();
+                self.a_phase.set_low();
+                self.b_phase.set_high(power);
                 self.c_phase.disable();
             }
             4 => {
-                self.a_phase.set_low(power);
+                self.a_phase.set_low();
                 self.b_phase.disable();
-                self.c_phase.set_high();
+                self.c_phase.set_high(power);
             }
             5 => {
                 self.a_phase.disable();
-                self.b_phase.set_low(power);
-                self.c_phase.set_high();
+                self.b_phase.set_low();
+                self.c_phase.set_high(power);
             }
             _ => panic!(),
         }

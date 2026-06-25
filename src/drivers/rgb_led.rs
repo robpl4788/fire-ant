@@ -20,7 +20,11 @@ where
 {
     /// Create a new RGB LED driver.
     pub fn new(red: R, green: G, blue: B) -> Self {
-        Self { red, green, blue }
+        let mut rgb_led = Self { red, green, blue };
+
+        rgb_led.off();
+
+        rgb_led
     }
 
     /// Set the LED color using 0 to 1 brightness values.
