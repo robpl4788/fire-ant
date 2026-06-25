@@ -55,9 +55,18 @@ async fn main(_spawner: Spawner) {
 
     board.rgb.green();
     loop {
-        board.bldc.progress();
+        board.bldc.disable();
+        // board.bldc.progress();
         let pin_adc_counts = adc.read(&mut adc_pin_0).await.unwrap();
         info!("ADC counts: {}", pin_adc_counts);
         Timer::after_millis(10).await;
     }
 }
+
+/// Program metadata for `picotool info`
+#[unsafe(link_section = ".bi_entries")]
+#[used]
+pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 2] = [
+    embassy_rp::binary_info::rp_program_name!(c"Fire Ant Control Board"),
+    embassy_rp::binary_info::rp_program_description!(c"Version 0.1.0"),
+];
