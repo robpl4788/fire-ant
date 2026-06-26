@@ -97,4 +97,5 @@ impl Logger {
     }
 }
 
-pub static LOGGER: Mutex<CriticalSectionRawMutex, Logger> = Mutex::new(Logger::new());
+pub type LoggerMutex = Mutex<CriticalSectionRawMutex, Logger>;
+pub static LOGGER: LoggerMutex = Mutex::new(Logger::new());

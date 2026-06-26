@@ -1,9 +1,12 @@
+use crate::ADCMutex;
+use crate::drivers::bldc::Phase;
 use crate::drivers::{bldc, rgb_led};
 
 use embassy_rp::Peri;
+use embassy_rp::adc::Channel;
 use embassy_rp::peripherals::{
-    PIN_10, PIN_11, PIN_12, PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PWM_SLICE0, PWM_SLICE1,
-    PWM_SLICE5, PWM_SLICE6, PWM_SLICE7,
+    PIN_10, PIN_11, PIN_12, PIN_13, PIN_14, PIN_15, PIN_16, PIN_17, PIN_18, PIN_26, PIN_27, PIN_28,
+    PIN_29, PWM_SLICE0, PWM_SLICE1, PWM_SLICE5, PWM_SLICE6, PWM_SLICE7,
 };
 use embassy_rp::pwm::{Config, Pwm, PwmOutput};
 
@@ -55,6 +58,18 @@ pub struct FireAntBoardBuilder {
         Peri<'static, PIN_14>,
         Peri<'static, PIN_15>,
     )>,
+    adc: Option<(
+        &'static ADCMutex,
+        Peri<'static, PIN_26>,
+        Peri<'static, PIN_27>,
+        Peri<'static, PIN_28>,
+        Peri<'static, PIN_29>,
+    )>,
+    adc_ref: Option<&'static ADCMutex>,
+    bemf_common_pin: Option<Channel<'static>>,
+    bemf_b_pin: Option<Channel<'static>>,
+    bemf_a_pin: Option<Channel<'static>>,
+    current_sense_pin: Option<Channel<'static>>,
 }
 
 impl FireAntBoardBuilder {
@@ -63,6 +78,12 @@ impl FireAntBoardBuilder {
         Self {
             rgb_pwm: None,
             bldc_pwm: None,
+            adc: None,
+            bemf_common_pin: None,
+            bemf_b_pin: None,
+            bemf_a_pin: None,
+            current_sense_pin: None,
+            adc_ref: None,
         }
     }
 
@@ -106,8 +127,28 @@ impl FireAntBoardBuilder {
         self
     }
 
+    pub fn with_adc(
+        mut self,
+        adc: &'static ADCMutex,
+        bemf_common_pin: Peri<'static, PIN_26>,
+        bemf_b_pin: Peri<'static, PIN_27>,
+        bemf_a_pin: Peri<'static, PIN_28>,
+        current_sense_pin: Peri<'static, PIN_29>,
+    ) -> Self {
+        self.adc = Some((
+            adc,
+            bemf_common_pin,
+            bemf_b_pin,
+            bemf_a_pin,
+            current_sense_pin,
+        ));
+
+        self
+    }
+
     /// Build the FireAntBoard
     pub fn build(mut self) -> FireAntBoard {
+        self.build_adc();
         let rgb = self.build_rgb();
         let bldc = self.build_bldc();
         FireAntBoard { rgb, bldc }
@@ -158,13 +199,54 @@ impl FireAntBoardBuilder {
         let (lowa_ch, highc_ch) = lowa_highc_pwm.split();
         let (highb_ch, higha_ch) = highb_higha_pwm.split();
 
-        bldc::BLDC::new(
+        let adc_ref = self.adc_ref.expect("ADC must be initialised");
+        let phase_a = Phase::new(
             lowa_ch.expect("Phase A low split failed"),
-            lowb_ch.expect("Phase B low split failed"),
-            lowc_ch.expect("Phase C low split failed"),
             higha_ch.expect("Phase A high split failed"),
+            adc_ref,
+            self.bemf_a_pin.take(),
+        );
+        let phase_b = Phase::new(
+            lowb_ch.expect("Phase B low split failed"),
             highb_ch.expect("Phase B high split failed"),
+            adc_ref,
+            self.bemf_b_pin.take(),
+        );
+        let phase_c = Phase::new(
+            lowc_ch.expect("Phase C low split failed"),
             highc_ch.expect("Phase C high split failed"),
+            adc_ref,
+            None,
+        );
+
+        bldc::BLDC::new(
+            phase_a,
+            phase_b,
+            phase_c,
+            adc_ref,
+            self.current_sense_pin
+                .take()
+                .expect("Current Sense Pin must be provided"),
+            self.bemf_common_pin
+                .take()
+                .expect("Back Emf Common Pin must be provided"),
         )
+    }
+
+    fn build_adc(&mut self) {
+        let (adc_ref, bemf_common_pin, bemf_b_pin, bemf_a_pin, current_sense_pin) =
+            self.adc.take().expect("ADC needs to be initialised");
+
+        self.adc_ref = Some(adc_ref);
+        self.bemf_common_pin = Some(Channel::new_pin(
+            bemf_common_pin,
+            embassy_rp::gpio::Pull::None,
+        ));
+        self.bemf_b_pin = Some(Channel::new_pin(bemf_b_pin, embassy_rp::gpio::Pull::None));
+        self.bemf_a_pin = Some(Channel::new_pin(bemf_a_pin, embassy_rp::gpio::Pull::None));
+        self.current_sense_pin = Some(Channel::new_pin(
+            current_sense_pin,
+            embassy_rp::gpio::Pull::None,
+        ));
     }
 }

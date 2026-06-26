@@ -4,14 +4,18 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::adc::{Adc, Channel, Config as AdcConfig, InterruptHandler as ADCInterruptHandler};
+use embassy_rp::adc::{
+    Adc, Async, Channel, Config as AdcConfig, InterruptHandler as ADCInterruptHandler,
+};
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::ClockConfig;
 use embassy_rp::config::Config as RpConfig;
 use embassy_rp::gpio::Pull;
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
-use embassy_time::Timer;
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::mutex::Mutex;
+use embassy_time::{Instant, Timer};
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
 use panic_probe as _;
@@ -27,16 +31,16 @@ use v2_control_board::FireAntBoardBuilder;
 
 // Timing constants
 const ADC_INTERVAL_MS: u64 = 1;
-const LOG_INTERVAL_MS: u64 = 20;
+const LOG_INTERVAL_MS: u64 = 2;
 const MOTOR_INTERVAL_MS: u64 = 10;
 const USB_BUFFER_SIZE: usize = 64;
 const USB_PACKET_COUNT: usize = 4;
 
 // USB configuration constants
-const USB_VID: u16 = 0xc0de;
-const USB_PID: u16 = 0xcafe;
-const USB_MANUFACTURER: &str = "Embassy";
-const USB_PRODUCT: &str = "USB-serial example";
+const USB_VID: u16 = 0x0000;
+const USB_PID: u16 = 0x0000;
+const USB_MANUFACTURER: &str = "Robert";
+const USB_PRODUCT: &str = "FireAntBoard";
 const USB_SERIAL: &str = "12345678";
 const USB_MAX_POWER: u16 = 100;
 const USB_MAX_PACKET_SIZE: u8 = 64;
@@ -48,6 +52,9 @@ bind_interrupts!(struct USBIrqs { USBCTRL_IRQ => InterruptHandler<USB>; });
 type UsbDriver = Driver<'static, USB>;
 type UsbDevice = embassy_usb::UsbDevice<'static, UsbDriver>;
 type UsbCdcClass = CdcAcmClass<'static, UsbDriver>;
+
+pub type ADCMutex = Mutex<CriticalSectionRawMutex, Adc<'static, Async>>;
+pub static ADC_CELL: StaticCell<ADCMutex> = StaticCell::new();
 
 #[embassy_executor::task]
 async fn usb_task(mut usb: UsbDevice) {
@@ -153,6 +160,10 @@ async fn main(spawner: Spawner) {
     config.clocks = ClockConfig::crystal(12_000_000);
     let peripherals = embassy_rp::init(config);
 
+    // Main control loop: ADC sampling
+    let adc = Adc::new(peripherals.ADC, ADCIrqs, AdcConfig::default());
+    let adc_mutex_ref: &mut ADCMutex = ADC_CELL.init(Mutex::new(adc));
+
     // Setup board components
     let mut board = FireAntBoardBuilder::new()
         .with_rgb_pwm(
@@ -173,6 +184,13 @@ async fn main(spawner: Spawner) {
             peripherals.PIN_14,
             peripherals.PIN_15,
         )
+        .with_adc(
+            adc_mutex_ref,
+            peripherals.PIN_26,
+            peripherals.PIN_27,
+            peripherals.PIN_28,
+            peripherals.PIN_29,
+        )
         .build();
 
     // Setup USB
@@ -184,21 +202,28 @@ async fn main(spawner: Spawner) {
 
     board.rgb.green();
 
-    // Main control loop: ADC sampling
-    let mut adc = Adc::new(peripherals.ADC, ADCIrqs, AdcConfig::default());
-    let mut adc_pin = Channel::new_pin(peripherals.PIN_29, Pull::None);
-
     board.bldc.disable();
     // spawner.spawn(run_motor(board).expect("Failed to create USB monitor task"));
 
+    let mut target_rps: i16 = 1;
+    let mut direction: i16 = 1;
+
     loop {
-        Timer::after_millis(ADC_INTERVAL_MS).await;
+        for _ in 0..200 {
+            Timer::after_micros(50).await;
+            board.bldc.update(Instant::now().as_micros());
+        }
 
-        let adc_raw = adc.read(&mut adc_pin).await.unwrap();
-        let current_amps = (adc_raw as f32 - 2048.0) / 2048.0 * 30.0;
+        if target_rps >= 200 {
+            direction = -1;
+        } else if target_rps <= 0 {
+            direction = 0;
+        }
 
-        let mut logger = LOGGER.lock().await;
-        logger.log_value("current", current_amps);
+        target_rps += direction;
+
+        board.bldc.set_target_rps(target_rps);
+        println!("target_rps: {}", &target_rps);
     }
 }
 
