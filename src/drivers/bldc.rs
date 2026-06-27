@@ -1,15 +1,11 @@
-use defmt::{info, println};
-use embassy_rp::adc::Channel;
-use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+use defmt::Format;
+use defmt::println;
 use embassy_time::Instant;
+use embassy_time::Timer;
 use embedded_hal::pwm::SetDutyCycle;
 
 use crate::{
-    ADCMutex,
-    drivers::{
-        bldc::PhaseState::{DISABLED, HIGH, LOW},
-        logger::LOGGER,
-    },
+    drivers::bldc::PhaseState::{DISABLED, HIGH, LOW},
     utils::SetDutyCycleExtras,
 };
 
@@ -28,8 +24,6 @@ where
 {
     low: Low,
     high: High,
-    adc_mutex: &'static ADCMutex,
-    adc_pin: Option<Channel<'static>>,
     phase_state: PhaseState,
 }
 
@@ -38,17 +32,10 @@ where
     Low: SetDutyCycle,
     High: SetDutyCycle,
 {
-    pub fn new(
-        low: Low,
-        high: High,
-        adc_mutex: &'static ADCMutex,
-        adc_pin: Option<Channel<'static>>,
-    ) -> Self {
+    pub fn new(low: Low, high: High) -> Self {
         let mut new_phase = Phase {
             low,
             high,
-            adc_mutex,
-            adc_pin,
             phase_state: DISABLED,
         };
 
@@ -58,52 +45,28 @@ where
     }
 
     fn disable(&mut self) {
-        let _ = self.low.set_duty_cycle_fully_off();
+        let _ = self.low.set_duty_cycle_fully_on(); // Low is inverted
         let _ = self.high.set_duty_cycle_fully_off();
         self.phase_state = DISABLED;
     }
 
     fn set_low(&mut self) {
-        let _ = self.high.set_duty_cycle_fully_off();
-        let _ = self.low.set_duty_cycle_fully_on();
+        let _ = self.high.set_duty_normalised(0.0); // Low is inverted
+        let _ = self.low.set_duty_normalised(0.0);
         self.phase_state = LOW;
     }
 
     fn set_high(&mut self, power: f32) {
         // Prevent full power to avoid draining bootstrap capacitor too quickly
         let power = power.clamp(0., 0.9);
-        let _ = self.low.set_duty_cycle_fully_off();
+        let _ = self.low.set_duty_normalised(power);
         let _ = self.high.set_duty_normalised(power);
         self.phase_state = HIGH;
-    }
-
-    fn has_adc(&self) -> bool {
-        self.adc_pin.is_some()
-    }
-
-    async fn get_phase_voltage(&mut self) -> Option<f32> {
-        if self.phase_state == DISABLED {
-            if let Some(ref mut adc_pin) = self.adc_pin {
-                let mut adc = self.adc_mutex.lock().await;
-                let raw_voltage = adc.read(adc_pin).await.ok();
-                // println!("{}", raw_voltage);
-                if let Some(voltage) = raw_voltage {
-                    let voltage = voltage as f32 / 4096.0 * 3.3 * 3.0;
-                    Some(voltage)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
-        } else {
-            None
-        }
     }
 }
 
 /// 6-phase commutation state for 3-phase BLDC motor
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Format)]
 enum CommutationState {
     /// Phase A high, Phase B low
     State0,
@@ -148,14 +111,12 @@ where
     c_phase: Phase<CLow, CHigh>,
     state: CommutationState,
     power: f32,
-    adc: &'static ADCMutex,
-    current_sense_pin: Channel<'static>,
-    back_emf_common_pin: Channel<'static>,
     kv: u16,
     vbat: f32,
     commutations_per_rotation: u8,
     last_update_micros: u64,
     last_commutation_micros: u64,
+    current_commutation_delay_micros: u64,
     max_rps: u16,
     target_rps: i16,
 }
@@ -173,24 +134,19 @@ where
         a_phase: Phase<ALow, AHigh>,
         b_phase: Phase<BLow, BHigh>,
         c_phase: Phase<CLow, CHigh>,
-        adc: &'static ADCMutex,
-        current_sense_pin: Channel<'static>,
-        back_emf_common_pin: Channel<'static>,
     ) -> Self {
         let mut bldc = Self {
             a_phase,
             b_phase,
             c_phase,
-            adc,
-            current_sense_pin,
             state: CommutationState::State0,
             power: 0.0,
-            back_emf_common_pin,
             kv: 1750,
             vbat: 7.4,
             commutations_per_rotation: 42,
             last_update_micros: 0,
             last_commutation_micros: 0,
+            current_commutation_delay_micros: 0,
             target_rps: 0,
             max_rps: 200,
         };
@@ -206,9 +162,10 @@ where
     }
 
     /// Advance to the next commutation state
-    pub fn progress(&mut self, power: f32) {
+    pub async fn progress(&mut self, power: f32) {
         self.state = self.state.next();
         self.set_power(power);
+        // Timer::after_micros(50).await;
     }
 
     /// Apply commutation pattern for the current state
@@ -253,47 +210,24 @@ where
         self.apply_commutation(power);
     }
 
-    async fn get_back_emf_common_voltage(&mut self) -> f32 {
-        let voltage: f32;
-        let voltage_raw: u16;
-        {
-            let mut adc_raw = self.adc.lock().await;
-            voltage_raw = adc_raw.read(&mut self.current_sense_pin).await.unwrap();
-        }
-        voltage = voltage_raw as f32 / 4096.0 * 3.0;
-
-        voltage
-    }
-
-    pub async fn get_current_amps(&mut self) -> f32 {
-        let current_amps: f32;
-        let current_raw: u16;
-        {
-            let mut adc_raw = self.adc.lock().await;
-            current_raw = adc_raw.read(&mut self.current_sense_pin).await.unwrap();
-        }
-        current_amps = (current_raw as f32 - 2048.0) / 2048.0 * 30.0;
-
-        current_amps
-    }
-
     // Run at 20khz?
-    pub async fn update(&mut self, micros: u64) -> bool {
+    pub async fn open_loop(&mut self, micros: u64) -> bool {
         // self.disable();
-        let dt = micros - self.last_update_micros;
+        // let dt = micros - self.last_update_micros;
 
         let commutations_per_second: u64 =
             self.commutations_per_rotation as u64 * self.target_rps as u64;
         let commutation_delay_micros: u64;
         if commutations_per_second != 0 {
             commutation_delay_micros = 1_000_000 / commutations_per_second;
-
+            self.current_commutation_delay_micros = commutation_delay_micros;
             let next_commutation = self.last_commutation_micros + commutation_delay_micros;
+
             // println!(
             //     "next_commutation: {}, micros: {}, commutation_delay_micros: {},",
             //     next_commutation, micros, commutation_delay_micros
             // );
-            if (next_commutation < micros) {
+            if next_commutation < micros {
                 // println!("micros: {}", &micros);
                 self.last_commutation_micros += commutation_delay_micros;
 
@@ -302,37 +236,42 @@ where
                     self.last_commutation_micros = micros;
                 }
                 // self.progress(self.target_rps as f32 / self.max_rps as f32);
-                self.progress(0.3);
+                self.progress(0.4).await;
                 // println!("commutate");
             }
         }
 
-        if self.state == CommutationState::State2 {
-            let phase_a_voltage = self
-                .a_phase
-                .get_phase_voltage()
-                .await
-                .expect("Phase A voltage is important");
-
-            let common_voltage = self.get_back_emf_common_voltage().await;
-
-            // println!(
-            //     "{}, {}, {}",
-            //     phase_a_voltage < common_voltage,
-            //     phase_a_voltage,
-            //     common_voltage
-            // );
-            // if (phase_a_voltage < common_voltage) {
-            //     println!("commutate");
-            // } else {
-            //     println!("dont");
-            // }
-        } else if self.state == CommutationState::State1 {
-            println!("state1");
-        }
         self.last_update_micros = micros;
 
         self.state == CommutationState::State0
+    }
+
+    pub async fn closed_loop(&mut self, v_a: f32, v_common: f32) {
+        if self.state == CommutationState::State2 {
+            println!("v_a: {}, v_com: {}", v_a, v_common);
+            if v_a > v_common {
+                self.progress(0.4).await;
+                let now = Instant::now().as_micros();
+                println!("commutate");
+                println!("now: {}, last: {}", &now, self.last_commutation_micros);
+
+                self.current_commutation_delay_micros = now - self.last_commutation_micros;
+                self.last_commutation_micros = now;
+                let commutations_per_second = 1_000_000 / self.current_commutation_delay_micros;
+                println!("cps: {}", &commutations_per_second);
+                println!(
+                    "rps = {}",
+                    commutations_per_second / self.commutations_per_rotation as u64
+                );
+            }
+        } else {
+            if self.last_commutation_micros + self.current_commutation_delay_micros
+                < Instant::now().as_micros()
+            {
+                self.progress(0.4).await;
+                self.last_commutation_micros = Instant::now().as_micros();
+            }
+        }
     }
 
     pub fn set_target_rps(&mut self, new_target: i16) {
