@@ -1,6 +1,7 @@
 use defmt::{info, println};
 use embassy_rp::adc::Channel;
 use embassy_sync::{blocking_mutex::raw::CriticalSectionRawMutex, mutex::Mutex};
+use embassy_time::Instant;
 use embedded_hal::pwm::SetDutyCycle;
 
 use crate::{
@@ -85,7 +86,7 @@ where
             if let Some(ref mut adc_pin) = self.adc_pin {
                 let mut adc = self.adc_mutex.lock().await;
                 let raw_voltage = adc.read(adc_pin).await.ok();
-                println!("{}", raw_voltage);
+                // println!("{}", raw_voltage);
                 if let Some(voltage) = raw_voltage {
                     let voltage = voltage as f32 / 4096.0 * 3.3 * 3.0;
                     Some(voltage)
@@ -277,11 +278,9 @@ where
     }
 
     // Run at 20khz?
-    pub fn update(&mut self, micros: u64) {
+    pub async fn update(&mut self, micros: u64) -> bool {
         // self.disable();
         let dt = micros - self.last_update_micros;
-
-        // println!("dt: {}", dt);
 
         let commutations_per_second: u64 =
             self.commutations_per_rotation as u64 * self.target_rps as u64;
@@ -303,28 +302,37 @@ where
                     self.last_commutation_micros = micros;
                 }
                 // self.progress(self.target_rps as f32 / self.max_rps as f32);
-                self.progress(0.5);
+                self.progress(0.3);
                 // println!("commutate");
             }
         }
 
-        // if self.state == CommutationState::State2 {
-        //     let phase_a_voltage = self
-        //         .a_phase
-        //         .get_phase_voltage()
-        //         .await
-        //         .expect("Phase A voltage is important");
+        if self.state == CommutationState::State2 {
+            let phase_a_voltage = self
+                .a_phase
+                .get_phase_voltage()
+                .await
+                .expect("Phase A voltage is important");
 
-        //     let common_voltage = self.get_back_emf_common_voltage().await;
+            let common_voltage = self.get_back_emf_common_voltage().await;
 
-        //     println!(
-        //         "{}, {}, {}",
-        //         phase_a_voltage < common_voltage,
-        //         phase_a_voltage,
-        //         common_voltage
-        //     )
-        // }
+            // println!(
+            //     "{}, {}, {}",
+            //     phase_a_voltage < common_voltage,
+            //     phase_a_voltage,
+            //     common_voltage
+            // );
+            // if (phase_a_voltage < common_voltage) {
+            //     println!("commutate");
+            // } else {
+            //     println!("dont");
+            // }
+        } else if self.state == CommutationState::State1 {
+            println!("state1");
+        }
         self.last_update_micros = micros;
+
+        self.state == CommutationState::State0
     }
 
     pub fn set_target_rps(&mut self, new_target: i16) {

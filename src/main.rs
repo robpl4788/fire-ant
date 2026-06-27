@@ -10,7 +10,7 @@ use embassy_rp::adc::{
 use embassy_rp::bind_interrupts;
 use embassy_rp::clocks::ClockConfig;
 use embassy_rp::config::Config as RpConfig;
-use embassy_rp::gpio::Pull;
+use embassy_rp::gpio::{Level, Output, Pull};
 use embassy_rp::peripherals::USB;
 use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -197,8 +197,8 @@ async fn main(spawner: Spawner) {
     let usb_driver = Driver::new(peripherals.USB, USBIrqs);
     let (usb_device, usb_class) = setup_usb_device(usb_driver);
 
-    spawner.spawn(usb_task(usb_device).expect("Failed to create USB task"));
-    spawner.spawn(usb_monitor(usb_class).expect("Failed to create USB monitor task"));
+    // spawner.spawn(usb_task(usb_device).expect("Failed to create USB task"));
+    // spawner.spawn(usb_monitor(usb_class).expect("Failed to create USB monitor task"));
 
     board.rgb.green();
 
@@ -208,14 +208,27 @@ async fn main(spawner: Spawner) {
     let mut target_rps: i16 = 1;
     let mut direction: i16 = 1;
 
+    let _l_phase = Output::new(peripherals.PIN_19, Level::Low);
+    let mut l_enable = Output::new(peripherals.PIN_20, Level::High);
+
     loop {
-        for _ in 0..200 {
+        for _ in 0..400 {
             Timer::after_micros(50).await;
-            board.bldc.update(Instant::now().as_micros());
+            let now = Instant::now().as_micros();
+            if now < 5_000_000 {
+                if board.bldc.update(now).await {
+                    l_enable.set_high();
+                } else {
+                    l_enable.set_low();
+                }
+            } else {
+                board.bldc.disable();
+                defmt::panic!();
+            }
         }
 
-        if target_rps >= 200 {
-            direction = -1;
+        if target_rps >= 50 {
+            direction = 0;
         } else if target_rps <= 0 {
             direction = 0;
         }
