@@ -294,13 +294,14 @@ async fn main(spawner: Spawner) {
             if now < 2_000_000 {
                 bldc.open_loop(now).await;
                 l_enable.set_low();
-            } else if now < 2_200_000 {
+            } else if now < 3_000_000 {
+                Timer::after_micros(2).await;
+                let v_a = get_phase_voltage(&mut bemf_a_pin, &mut adc).await;
+                let v_com = get_phase_voltage(&mut bemf_common_pin, &mut adc).await;
+                // let d_t = Instant::now().as_micros() - bldc.get_last_commutation();
+                // println!("v_a: {}, v_com: {}", v_a, v_com);
                 l_enable.set_high();
-                bldc.closed_loop(
-                    get_phase_voltage(&mut bemf_a_pin, &mut adc).await,
-                    get_phase_voltage(&mut bemf_common_pin, &mut adc).await,
-                )
-                .await;
+                bldc.closed_loop(v_a, v_com).await;
             } else {
                 bldc.disable();
                 defmt::panic!();
@@ -311,11 +312,11 @@ async fn main(spawner: Spawner) {
             direction = 0;
         } else if target_rps <= 0 {
             direction = 0;
+        } else {
+            target_rps += direction;
+            bldc.set_target_rps(target_rps);
         }
 
-        target_rps += direction;
-
-        bldc.set_target_rps(target_rps);
         // println!("target_rps: {}", &target_rps);
     }
 }

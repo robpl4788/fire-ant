@@ -1,9 +1,9 @@
 use defmt::Format;
 use defmt::println;
 use embassy_time::Instant;
-use embassy_time::Timer;
 use embedded_hal::pwm::SetDutyCycle;
 
+use crate::drivers::bldc;
 use crate::{
     drivers::bldc::PhaseState::{DISABLED, HIGH, LOW},
     utils::SetDutyCycleExtras,
@@ -67,7 +67,7 @@ where
 
 /// 6-phase commutation state for 3-phase BLDC motor
 #[derive(Clone, Copy, Debug, PartialEq, Format)]
-enum CommutationState {
+pub enum CommutationState {
     /// Phase A high, Phase B low
     State0,
     /// Phase A high, Phase C low
@@ -117,8 +117,12 @@ where
     last_update_micros: u64,
     last_commutation_micros: u64,
     current_commutation_delay_micros: u64,
+    scheduled_commutation_micros: u64,
+    bemf_a_sample_valid: bool,
+    bemf_a_was_above_common: bool,
     max_rps: u16,
     target_rps: i16,
+    prev_v_a: f32,
 }
 
 impl<ALow, BLow, CLow, AHigh, BHigh, CHigh> BLDC<ALow, BLow, CLow, AHigh, BHigh, CHigh>
@@ -147,8 +151,12 @@ where
             last_update_micros: 0,
             last_commutation_micros: 0,
             current_commutation_delay_micros: 0,
+            scheduled_commutation_micros: 0,
+            bemf_a_sample_valid: false,
+            bemf_a_was_above_common: false,
             target_rps: 0,
             max_rps: 200,
+            prev_v_a: 0.,
         };
 
         bldc.disable();
@@ -164,6 +172,8 @@ where
     /// Advance to the next commutation state
     pub async fn progress(&mut self, power: f32) {
         self.state = self.state.next();
+        self.scheduled_commutation_micros = 0;
+        self.bemf_a_sample_valid = false;
         self.set_power(power);
         // Timer::after_micros(50).await;
     }
@@ -210,6 +220,9 @@ where
         self.apply_commutation(power);
     }
 
+    pub fn get_last_commutation(&self) -> u64 {
+        self.last_commutation_micros
+    }
     // Run at 20khz?
     pub async fn open_loop(&mut self, micros: u64) -> bool {
         // self.disable();
@@ -222,7 +235,6 @@ where
             commutation_delay_micros = 1_000_000 / commutations_per_second;
             self.current_commutation_delay_micros = commutation_delay_micros;
             let next_commutation = self.last_commutation_micros + commutation_delay_micros;
-
             // println!(
             //     "next_commutation: {}, micros: {}, commutation_delay_micros: {},",
             //     next_commutation, micros, commutation_delay_micros
@@ -246,32 +258,58 @@ where
         self.state == CommutationState::State0
     }
 
-    pub async fn closed_loop(&mut self, v_a: f32, v_common: f32) {
-        if self.state == CommutationState::State2 {
-            println!("v_a: {}, v_com: {}", v_a, v_common);
-            if v_a > v_common {
-                self.progress(0.4).await;
-                let now = Instant::now().as_micros();
-                println!("commutate");
-                println!("now: {}, last: {}", &now, self.last_commutation_micros);
+    pub fn get_state(&self) -> CommutationState {
+        self.state
+    }
 
-                self.current_commutation_delay_micros = now - self.last_commutation_micros;
-                self.last_commutation_micros = now;
-                let commutations_per_second = 1_000_000 / self.current_commutation_delay_micros;
-                println!("cps: {}", &commutations_per_second);
-                println!(
-                    "rps = {}",
-                    commutations_per_second / self.commutations_per_rotation as u64
-                );
+    pub async fn closed_loop(&mut self, v_a: f32, v_common: f32) {
+        let now = Instant::now().as_micros();
+
+        if self.state == CommutationState::State2 {
+            // self.set_power(1.);
+            let time_since_commutation = now.saturating_sub(self.last_commutation_micros);
+            let expected_commutation_delay = self.current_commutation_delay_micros.max(1);
+
+            if time_since_commutation > 60 {
+                if v_a < self.prev_v_a {
+                    self.progress(0.4).await;
+                    self.current_commutation_delay_micros = now - self.last_commutation_micros;
+                    println!("{}", &self.current_commutation_delay_micros);
+                    self.last_commutation_micros = now;
+                    self.prev_v_a = 0.;
+                }
             }
+
+            self.prev_v_a = v_a;
+
+            // if time_since_commutation >= expected_commutation_delay {
+            //     println!("should commutate");
+            //     self.last_commutation_micros = now;
+            // }
+
+            let above_common = v_a > v_common;
+
+            // println!("{}", &above_common);
         } else {
-            if self.last_commutation_micros + self.current_commutation_delay_micros
-                < Instant::now().as_micros()
-            {
-                self.progress(0.4).await;
-                self.last_commutation_micros = Instant::now().as_micros();
-            }
+            self.open_loop(now).await;
         }
+        // else if self.state == CommutationState::State5 {
+        //     if v_a < v_common {
+        //         self.progress(0.4).await;
+        //         let now = Instant::now().as_micros();
+
+        //         self.current_commutation_delay_micros = now - self.last_commutation_micros;
+        //         self.last_commutation_micros = now;
+        //     }
+        // }
+        // else {
+        //     if self.last_commutation_micros + self.current_commutation_delay_micros
+        //         < Instant::now().as_micros()
+        //     {
+        //         self.progress(0.4).await;
+        //         self.last_commutation_micros = Instant::now().as_micros();
+        //     }
+        // }
     }
 
     pub fn set_target_rps(&mut self, new_target: i16) {
