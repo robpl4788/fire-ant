@@ -12,7 +12,7 @@ use embassy_rp::config::Config as RpConfig;
 use embassy_rp::gpio::{Level, Output, Pull};
 use embassy_rp::pac;
 use embassy_rp::peripherals::USB;
-use embassy_rp::pwm::Pwm;
+use embassy_rp::pwm::{Pwm, SetDutyCycle};
 // use embassy_rp::usb::{Driver, InterruptHandler};
 use embassy_rp::{bind_interrupts, pwm};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -174,12 +174,6 @@ async fn main(spawner: Spawner) {
 
     // Setup board components
 
-    let pwm_rg = peripherals.PWM_SLICE0;
-    let red_pin = peripherals.PIN_16;
-    let green_pin = peripherals.PIN_17;
-    let pwm_b = peripherals.PWM_SLICE1;
-    let blue_pin = peripherals.PIN_18;
-
     let pwm_lowc_lowb = peripherals.PWM_SLICE5;
     let lowc_pin = peripherals.PIN_10;
     let lowb_pin = peripherals.PIN_11;
@@ -195,8 +189,15 @@ async fn main(spawner: Spawner) {
     let bemf_a_pin = peripherals.PIN_28;
     let current_sense_pin = peripherals.PIN_29;
 
+    let pwm_rg = peripherals.PWM_SLICE0;
+    let red_pin = peripherals.PIN_16;
+    let green_pin = peripherals.PIN_17;
+    let pwm_b = peripherals.PWM_SLICE1;
+    let blue_pin = peripherals.PIN_18;
+
     let mut led_cfg = pwm::Config::default();
     led_cfg.top = LED_PWM_TOP;
+    led_cfg.enable = true;
 
     let red_green_pwm = Pwm::new_output_ab(pwm_rg, red_pin, green_pin, led_cfg.clone());
     let blue_pwm = Pwm::new_output_a(pwm_b, blue_pin, led_cfg);
@@ -204,11 +205,9 @@ async fn main(spawner: Spawner) {
     let (red_ch, green_ch) = red_green_pwm.split();
     let (blue_ch, _) = blue_pwm.split();
 
-    let mut rgb = drivers::rgb_led::RGBLed::new(
-        red_ch.expect("Red channel split failed"),
-        green_ch.expect("Green channel split failed"),
-        blue_ch.expect("Blue channel split failed"),
-    );
+    red_ch.expect("lol").set_duty_cycle_fully_off();
+    green_ch.expect("lol").set_duty_cycle_fully_on();
+    blue_ch.expect("lol").set_duty_cycle_fully_on();
 
     let mut bldc_cfg = pwm::Config::default();
     bldc_cfg.top = BLDC_PWM_TOP;
@@ -273,7 +272,7 @@ async fn main(spawner: Spawner) {
     // spawner.spawn(usb_task(usb_device).expect("Failed to create USB task"));
     // spawner.spawn(usb_monitor(usb_class).expect("Failed to create USB monitor task"));
 
-    rgb.red();
+    // rgb.off();
 
     bldc.disable();
     // spawner.spawn(run_motor(board).expect("Failed to create USB monitor task"));
@@ -285,40 +284,42 @@ async fn main(spawner: Spawner) {
     let mut l_enable = Output::new(peripherals.PIN_20, Level::High);
 
     let mut last_loop: u64 = 0;
-    loop {
-        for _ in 0..800 {
-            ticker_pwm.wait_for_wrap();
-            let now = Instant::now().as_micros();
-            // println!("dt: {}", &now - last_loop);
-            last_loop = now;
-            if now < 2_000_000 {
-                bldc.open_loop(now).await;
-                l_enable.set_low();
-            } else if now < 3_000_000 {
-                Timer::after_micros(2).await;
-                let v_a = get_phase_voltage(&mut bemf_a_pin, &mut adc).await;
-                let v_com = get_phase_voltage(&mut bemf_common_pin, &mut adc).await;
-                // let d_t = Instant::now().as_micros() - bldc.get_last_commutation();
-                // println!("v_a: {}, v_com: {}", v_a, v_com);
-                l_enable.set_high();
-                bldc.closed_loop(v_a, v_com).await;
-            } else {
-                bldc.disable();
-                defmt::panic!();
-            }
-        }
 
-        if target_rps >= 50 {
-            direction = 0;
-        } else if target_rps <= 0 {
-            direction = 0;
-        } else {
-            target_rps += direction;
-            bldc.set_target_rps(target_rps);
-        }
+    loop {}
+    // loop {
+    //     for _ in 0..800 {
+    //         ticker_pwm.wait_for_wrap();
+    //         let now = Instant::now().as_micros();
+    //         // println!("dt: {}", &now - last_loop);
+    //         last_loop = now;
+    //         if now < 2_000_000 {
+    //             bldc.open_loop(now).await;
+    //             l_enable.set_low();
+    //         } else if now < 3_000_000 {
+    //             Timer::after_micros(2).await;
+    //             let v_a = get_phase_voltage(&mut bemf_a_pin, &mut adc).await;
+    //             let v_com = get_phase_voltage(&mut bemf_common_pin, &mut adc).await;
+    //             // let d_t = Instant::now().as_micros() - bldc.get_last_commutation();
+    //             // println!("v_a: {}, v_com: {}", v_a, v_com);
+    //             l_enable.set_high();
+    //             bldc.closed_loop(v_a, v_com).await;
+    //         } else {
+    //             bldc.disable();
+    //             defmt::panic!();
+    //         }
+    //     }
 
-        // println!("target_rps: {}", &target_rps);
-    }
+    //     if target_rps >= 50 {
+    //         direction = 0;
+    //     } else if target_rps <= 0 {
+    //         direction = 0;
+    //     } else {
+    //         target_rps += direction;
+    //         bldc.set_target_rps(target_rps);
+    //     }
+
+    //     // println!("target_rps: {}", &target_rps);
+    // }
 }
 
 /// Program metadata for `picotool info`
