@@ -24,6 +24,8 @@ use embassy_time::{Instant, Timer};
 use panic_probe as _;
 use static_cell::StaticCell;
 
+use crate::drivers::rgb_led;
+
 mod drivers;
 pub mod utils;
 
@@ -205,9 +207,13 @@ async fn main(spawner: Spawner) {
     let (red_ch, green_ch) = red_green_pwm.split();
     let (blue_ch, _) = blue_pwm.split();
 
-    red_ch.expect("lol").set_duty_cycle_fully_off();
-    green_ch.expect("lol").set_duty_cycle_fully_on();
-    blue_ch.expect("lol").set_duty_cycle_fully_on();
+    let mut rgb = rgb_led::RGBLed::new(
+        red_ch.expect("lol"),
+        green_ch.expect("lol"),
+        blue_ch.expect("lol"),
+    );
+
+    rgb.blue();
 
     let mut bldc_cfg = pwm::Config::default();
     bldc_cfg.top = BLDC_PWM_TOP;
@@ -235,6 +241,8 @@ async fn main(spawner: Spawner) {
     );
 
     pac::PWM.en().write(|w| {
+        w.set_ch0(true);
+        w.set_ch1(true);
         w.set_ch4(true);
         w.set_ch5(true);
         w.set_ch6(true);
@@ -285,7 +293,14 @@ async fn main(spawner: Spawner) {
 
     let mut last_loop: u64 = 0;
 
-    loop {}
+    loop {
+        Timer::after_millis(500).await;
+        rgb.green();
+        Timer::after_millis(500).await;
+        rgb.red();
+        Timer::after_millis(500).await;
+        rgb.blue();
+    }
     // loop {
     //     for _ in 0..800 {
     //         ticker_pwm.wait_for_wrap();
