@@ -8,6 +8,8 @@ use embassy_time::Timer;
 
 use panic_probe as _;
 
+use crate::drivers::radio;
+
 mod v2_control_board;
 
 mod drivers;
@@ -19,16 +21,22 @@ async fn main(spawner: Spawner) {
     let mut board = v2_control_board::V2ControlBoard::new();
 
     let mut rgb = board.take_rgb();
+    let mut radio = board.take_radio();
 
     rgb.blue();
 
     loop {
+        // Timer::after_millis(100).await;
+        // if radio.is_busy() == false {
+        //     rgb.green();
+        // }
+
         Timer::after_millis(500).await;
         rgb.green();
-        Timer::after_millis(500).await;
-        rgb.red();
+        radio.set_buffer();
         Timer::after_millis(500).await;
         rgb.blue();
+        radio.get_buffer();
     }
 }
 

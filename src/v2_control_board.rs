@@ -1,11 +1,13 @@
-use embassy_rp::Peri;
 use embassy_rp::config::Config as RpConfig;
-use embassy_rp::peripherals;
+use embassy_rp::gpio::{Input, Output};
+use embassy_rp::peripherals::{self, SPI0};
 use embassy_rp::pwm::{self, Pwm};
+use embassy_rp::{Peri, spi};
 use embassy_rp::{Peripherals, clocks::ClockConfig};
 
 use crate::drivers;
 use crate::drivers::bldc::BLDC;
+use crate::drivers::radio::Radio;
 use crate::drivers::rgb_led::{self, RGBLed};
 
 type RGBLedType = RGBLed<pwm::PwmOutput<'static>, pwm::PwmOutput<'static>, pwm::PwmOutput<'static>>;
@@ -17,6 +19,7 @@ type BLDCType = BLDC<
     pwm::PwmOutput<'static>,
     pwm::PwmOutput<'static>,
 >;
+type RadioType = Radio<SPI0>;
 
 const LED_PWM_TOP: u16 = 65535;
 const BLDC_PWM_TOP: u16 = 7499;
@@ -24,6 +27,7 @@ const BLDC_PWM_TOP: u16 = 7499;
 pub struct V2ControlBoard {
     rgb: Option<RGBLedType>,
     bldc: Option<BLDCType>,
+    radio: Option<Radio<SPI0>>,
 
     pwm_slice_red_green: Option<Peri<'static, peripherals::PWM_SLICE0>>,
     pwm_slice_blue: Option<Peri<'static, peripherals::PWM_SLICE1>>,
@@ -42,6 +46,13 @@ pub struct V2ControlBoard {
     higha_pin: Option<Peri<'static, peripherals::PIN_15>>,
     highb_pin: Option<Peri<'static, peripherals::PIN_14>>,
     highc_pin: Option<Peri<'static, peripherals::PIN_13>>,
+
+    miso_pin: Option<Peri<'static, peripherals::PIN_4>>,
+    mosi_pin: Option<Peri<'static, peripherals::PIN_3>>,
+    clk_pin: Option<Peri<'static, peripherals::PIN_2>>,
+    radio_cs_n_pin: Option<Peri<'static, peripherals::PIN_1>>,
+    busy_pin: Option<Peri<'static, peripherals::PIN_8>>,
+    radio_spi: Option<Peri<'static, peripherals::SPI0>>,
 }
 
 impl V2ControlBoard {
@@ -50,9 +61,11 @@ impl V2ControlBoard {
         let mut config = RpConfig::default();
         config.clocks = ClockConfig::crystal(12_000_000);
         let peripherals = embassy_rp::init(config);
+
         let mut result = V2ControlBoard {
             rgb: None,
             bldc: None,
+            radio: None,
 
             red_pin: Some(peripherals.PIN_16),
             green_pin: Some(peripherals.PIN_17),
@@ -71,10 +84,18 @@ impl V2ControlBoard {
             higha_pin: Some(peripherals.PIN_15),
             highb_pin: Some(peripherals.PIN_14),
             highc_pin: Some(peripherals.PIN_13),
+
+            miso_pin: Some(peripherals.PIN_4),
+            mosi_pin: Some(peripherals.PIN_3),
+            clk_pin: Some(peripherals.PIN_2),
+            radio_cs_n_pin: Some(peripherals.PIN_1),
+            busy_pin: Some(peripherals.PIN_8),
+            radio_spi: Some(peripherals.SPI0),
         };
 
         result.build_rgb();
         result.build_bldc();
+        result.build_radio();
 
         result.enable_pwm();
 
@@ -176,8 +197,45 @@ impl V2ControlBoard {
         ));
     }
 
+    fn build_radio(&mut self) {
+        // create SPI
+        let mut config = spi::Config::default();
+        config.frequency = 2_000_000;
+        config.phase = spi::Phase::CaptureOnFirstTransition;
+        config.polarity = spi::Polarity::IdleLow;
+        let mut spi = spi::Spi::new_blocking(
+            self.radio_spi.take().expect("Already built radio"),
+            self.clk_pin.take().expect("Already built radio"),
+            self.mosi_pin.take().expect("Already built radio"),
+            self.miso_pin.take().expect("Already built radio"),
+            config,
+        );
+
+        let radio_cs_n_output = Output::new(
+            self.radio_cs_n_pin.take().expect("Already built radio"),
+            embassy_rp::gpio::Level::High,
+        );
+
+        let busy = Input::new(
+            self.busy_pin.take().expect("Already built radio"),
+            embassy_rp::gpio::Pull::None,
+        );
+
+        self.radio = Some(Radio::new(spi, radio_cs_n_output, busy));
+    }
+
     pub fn take_rgb(&mut self) -> RGBLedType {
         let result = self.rgb.take();
         result.expect("Already took RGB Led")
+    }
+
+    pub fn take_bldc(&mut self) -> BLDCType {
+        let result = self.bldc.take();
+        result.expect("Already took BLDC")
+    }
+
+    pub fn take_radio(&mut self) -> RadioType {
+        let result = self.radio.take();
+        result.expect("Already took radio")
     }
 }
