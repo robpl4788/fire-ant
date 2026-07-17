@@ -7,7 +7,7 @@ use embassy_rp::{Peripherals, clocks::ClockConfig};
 
 use crate::drivers;
 use crate::drivers::bldc::BLDC;
-use crate::drivers::radio::Radio;
+use crate::drivers::radio::radio::Radio;
 use crate::drivers::rgb_led::{self, RGBLed};
 
 type RGBLedType = RGBLed<pwm::PwmOutput<'static>, pwm::PwmOutput<'static>, pwm::PwmOutput<'static>>;
@@ -52,6 +52,9 @@ pub struct V2ControlBoard {
     clk_pin: Option<Peri<'static, peripherals::PIN_2>>,
     radio_cs_n_pin: Option<Peri<'static, peripherals::PIN_1>>,
     busy_pin: Option<Peri<'static, peripherals::PIN_8>>,
+    dio1_pin: Option<Peri<'static, peripherals::PIN_7>>,
+    dio2_pin: Option<Peri<'static, peripherals::PIN_6>>,
+    dio3_pin: Option<Peri<'static, peripherals::PIN_5>>,
     radio_spi: Option<Peri<'static, peripherals::SPI0>>,
 }
 
@@ -90,6 +93,9 @@ impl V2ControlBoard {
             clk_pin: Some(peripherals.PIN_2),
             radio_cs_n_pin: Some(peripherals.PIN_1),
             busy_pin: Some(peripherals.PIN_8),
+            dio1_pin: Some(peripherals.PIN_7),
+            dio2_pin: Some(peripherals.PIN_6),
+            dio3_pin: Some(peripherals.PIN_5),
             radio_spi: Some(peripherals.SPI0),
         };
 
@@ -221,7 +227,22 @@ impl V2ControlBoard {
             embassy_rp::gpio::Pull::None,
         );
 
-        self.radio = Some(Radio::new(spi, radio_cs_n_output, busy));
+        let dio1 = Input::new(
+            self.dio1_pin.take().expect("Already built radio"),
+            embassy_rp::gpio::Pull::None,
+        );
+
+        let dio2 = Input::new(
+            self.dio2_pin.take().expect("Already built radio"),
+            embassy_rp::gpio::Pull::None,
+        );
+
+        let dio3 = Input::new(
+            self.dio3_pin.take().expect("Already built radio"),
+            embassy_rp::gpio::Pull::None,
+        );
+
+        self.radio = Some(Radio::new(spi, radio_cs_n_output, busy, dio1, dio2, dio3));
     }
 
     pub fn take_rgb(&mut self) -> RGBLedType {

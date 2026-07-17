@@ -4,11 +4,9 @@
 use defmt::*;
 use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_time::Timer;
+use embassy_time::{Duration, Instant, Timer};
 
 use panic_probe as _;
-
-use crate::drivers::radio;
 
 mod v2_control_board;
 
@@ -24,19 +22,33 @@ async fn main(spawner: Spawner) {
     let mut radio = board.take_radio();
 
     rgb.blue();
+    Timer::after_millis(2000).await;
+
+    let mut x = 0;
+    println!("busy: {}", radio.is_busy());
 
     loop {
+        let mut end = Instant::now().saturating_add(Duration::from_millis(500));
         // Timer::after_millis(100).await;
         // if radio.is_busy() == false {
         //     rgb.green();
         // }
 
-        Timer::after_millis(500).await;
         rgb.green();
-        radio.set_buffer();
-        Timer::after_millis(500).await;
+        radio.transmit(x);
+        println!("busy: {}", radio.is_busy());
+
+        println!("sent: {}", Instant::now().as_millis());
+
+        while radio.is_tx_done() == false {}
+        println!("done: {}", Instant::now().as_millis());
+        println!("busy: {}", radio.is_busy());
+        println!("");
+
         rgb.blue();
-        radio.get_buffer();
+
+        x = x.wrapping_add(1);
+        Timer::at(end).await;
     }
 }
 
