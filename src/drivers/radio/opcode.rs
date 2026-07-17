@@ -1,4 +1,5 @@
 #[repr(u8)]
+#[allow(unused)]
 pub enum OpCode {
     // Status
     GetStatus = 0xC0,

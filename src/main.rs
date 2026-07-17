@@ -14,7 +14,7 @@ mod drivers;
 pub mod utils;
 
 #[embassy_executor::main]
-async fn main(spawner: Spawner) {
+async fn main(_spawner: Spawner) {
     info!("Fire Ant Control Board starting...");
     let mut board = v2_control_board::V2ControlBoard::new();
 
@@ -25,24 +25,17 @@ async fn main(spawner: Spawner) {
     Timer::after_millis(2000).await;
 
     let mut x = 0;
-    println!("busy: {}", radio.is_busy());
 
     loop {
-        let mut end = Instant::now().saturating_add(Duration::from_millis(500));
-        // Timer::after_millis(100).await;
-        // if radio.is_busy() == false {
-        //     rgb.green();
-        // }
+        let end = Instant::now().saturating_add(Duration::from_millis(500));
 
         rgb.green();
         radio.transmit(x);
-        println!("busy: {}", radio.is_busy());
 
         println!("sent: {}", Instant::now().as_millis());
 
         while radio.is_tx_done() == false {}
         println!("done: {}", Instant::now().as_millis());
-        println!("busy: {}", radio.is_busy());
         println!("");
 
         rgb.blue();

@@ -209,7 +209,7 @@ impl V2ControlBoard {
         config.frequency = 2_000_000;
         config.phase = spi::Phase::CaptureOnFirstTransition;
         config.polarity = spi::Polarity::IdleLow;
-        let mut spi = spi::Spi::new_blocking(
+        let spi = spi::Spi::new_blocking(
             self.radio_spi.take().expect("Already built radio"),
             self.clk_pin.take().expect("Already built radio"),
             self.mosi_pin.take().expect("Already built radio"),
