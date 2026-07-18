@@ -1,3 +1,5 @@
+use crate::drivers::radio::radio_config::ModemConfig;
+
 #[derive(defmt::Format)]
 enum RadioMode {
     Reserved,
@@ -63,6 +65,23 @@ impl RadioStatus {
         Self {
             mode,
             command_status,
+        }
+    }
+}
+
+#[derive(defmt::Format, Clone, Copy)]
+#[allow(unused)]
+pub enum PacketStatus {
+    Lora { rssi_sync_raw: u8, snr_pkt_raw: u8 },
+}
+
+impl PacketStatus {
+    pub fn interpret_status(raw_status: [u8; 7], modem: ModemConfig) -> PacketStatus {
+        match modem {
+            ModemConfig::LoRa { .. } => PacketStatus::Lora {
+                rssi_sync_raw: raw_status[2],
+                snr_pkt_raw: raw_status[3],
+            },
         }
     }
 }
