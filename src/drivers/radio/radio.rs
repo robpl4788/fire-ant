@@ -1,6 +1,7 @@
 use defmt::println;
 use embassy_rp::{
     gpio::{Input, Output},
+    pac::pio::vals::ExecctrlStatusSel::IRQ,
     spi::{self, Blocking, Spi},
 };
 
@@ -11,7 +12,7 @@ use crate::drivers::radio::opcode::OpCode;
 use crate::drivers::radio::status::RadioStatus;
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum PacketType {
     GFSK = 0,
@@ -22,7 +23,7 @@ enum PacketType {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum StandbyConfig {
     StdbyRc = 0,
@@ -36,7 +37,7 @@ enum BufferAddresses {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum LoraSf {
     LoraSf5 = 0x50,
@@ -50,7 +51,7 @@ enum LoraSf {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum LoraBw {
     LoraBw1600 = 0x0A,
@@ -60,7 +61,7 @@ enum LoraBw {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum LoraCr {
     LoraCr4_5 = 0x01,
@@ -73,7 +74,7 @@ enum LoraCr {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum LoraHeaderType {
     ExplicitHeader = 0x00,
@@ -81,7 +82,7 @@ enum LoraHeaderType {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum LoraCrc {
     Enable = 0x20,
@@ -89,7 +90,7 @@ enum LoraCrc {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum LoraIq {
     Inverted = 0x00,
@@ -97,7 +98,7 @@ enum LoraIq {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, Copy)]
+#[derive(defmt::Format, Clone, Copy)]
 #[allow(unused)]
 enum RampTime {
     Ramp02Us = 0x00,
@@ -108,6 +109,18 @@ enum RampTime {
     Ramp12Us = 0xA0,
     Ramp16Us = 0xC0,
     Ramp20Us = 0xE0,
+}
+
+#[derive(defmt::Format, Clone, Copy)]
+struct LoraPacketStatus {
+    rssi_sync_raw: u8,
+    snr_pkt_raw: u8,
+}
+
+#[derive(defmt::Format, Clone, Copy)]
+struct RxBufferStatus {
+    rx_payload_length: u8,
+    rx_start_buffer_pointer: u8,
 }
 
 pub struct Radio<SPIInstance>
@@ -166,6 +179,53 @@ where
         self.clear_all_irq_status();
         self.write_buffer_single(BufferAddresses::TxBase as u8, data);
         self.set_tx();
+    }
+
+    pub async fn recieve(&mut self) -> u8 {
+        self.set_rx();
+        self._rx_done.wait_for_high().await;
+
+        let packet_status = self.get_packet_status();
+
+        println!("packet_status: {}", packet_status);
+
+        let irq_status = self.get_irq_status();
+
+        if irq_status != IrqMask::RX_DONE {
+            println!("irq status error: {}", irq_status);
+        }
+
+        self.clear_all_irq_status();
+
+        let rx_buffer_status = self.get_rx_buffer_status();
+        println!("rx_buffer_status: {}", rx_buffer_status);
+
+        self.read_buffer_single(rx_buffer_status.rx_start_buffer_pointer)
+    }
+
+    pub fn set_rx(&mut self) {
+        // No timeout, can be added, refer to datasheet
+        let mut command = [OpCode::SetRx as u8, 0, 0, 0];
+        self.spi_command(&mut command);
+    }
+
+    fn get_packet_status(&mut self) -> LoraPacketStatus {
+        let mut command = [OpCode::GetPacketStatus as u8, NOP, NOP, NOP, NOP, NOP, NOP];
+        self.spi_command(&mut command);
+
+        LoraPacketStatus {
+            rssi_sync_raw: command[2],
+            snr_pkt_raw: command[3],
+        }
+    }
+    fn get_rx_buffer_status(&mut self) -> RxBufferStatus {
+        let mut command = [OpCode::GetRxBufferStatus as u8, NOP, NOP, NOP];
+        self.spi_command(&mut command);
+
+        RxBufferStatus {
+            rx_payload_length: command[2],
+            rx_start_buffer_pointer: command[3],
+        }
     }
 
     fn set_standby(&mut self, standby_config: StandbyConfig) {
@@ -270,7 +330,11 @@ where
         let dio_2_mask = IrqMask::RX_DONE;
         let dio_3_mask = IrqMask::NONE;
 
-        let irq_mask = dio_1_mask.set(dio_2_mask).set(dio_3_mask);
+        let irq_mask = dio_1_mask
+            .set(dio_2_mask)
+            .set(dio_3_mask)
+            .set(IrqMask::HEADER_ERROR)
+            .set(IrqMask::CRC_ERROR);
 
         let mut command = [
             OpCode::SetDioIrqParams as u8,

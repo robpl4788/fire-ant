@@ -8,22 +8,44 @@ use embassy_time::{Duration, Instant, Timer};
 
 use panic_probe as _;
 
-mod v2_control_board;
+use crate::drivers::radio::{self, radio::Radio};
 
+use crate::boards::{rp2354_dev_and_sx1280, v2_control_board};
+
+mod boards;
 mod drivers;
 pub mod utils;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     info!("Fire Ant Control Board starting...");
-    let mut board = v2_control_board::V2ControlBoard::new();
+    // let mut board = v2_control_board::V2ControlBoard::new();
+
+    let mut board = rp2354_dev_and_sx1280::Rp2354DevAndSx1280::new().await;
 
     let mut rgb = board.take_rgb();
-    let mut radio = board.take_radio();
+    let radio = board.take_radio();
 
     rgb.blue();
     Timer::after_millis(2000).await;
+    rx(radio, rgb).await;
+}
 
+async fn rx(
+    mut radio: rp2354_dev_and_sx1280::RadioType,
+    mut rgb: rp2354_dev_and_sx1280::RGBLedType,
+) {
+    loop {
+        let data = radio.recieve().await;
+        println!("data: {}", &data);
+
+        rgb.green();
+        Timer::after_millis(100).await;
+        rgb.blue();
+    }
+}
+
+async fn tx(mut radio: v2_control_board::RadioType, mut rgb: v2_control_board::RGBLedType) {
     let mut x = 0;
 
     loop {

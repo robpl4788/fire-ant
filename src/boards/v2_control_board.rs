@@ -1,17 +1,18 @@
+use embassy_rp::clocks::ClockConfig;
 use embassy_rp::config::Config as RpConfig;
 use embassy_rp::gpio::{Input, Output};
 use embassy_rp::peripherals::{self, SPI0};
 use embassy_rp::pwm::{self, Pwm};
 use embassy_rp::{Peri, spi};
-use embassy_rp::{Peripherals, clocks::ClockConfig};
 
 use crate::drivers;
 use crate::drivers::bldc::BLDC;
 use crate::drivers::radio::radio::Radio;
 use crate::drivers::rgb_led::{self, RGBLed};
 
-type RGBLedType = RGBLed<pwm::PwmOutput<'static>, pwm::PwmOutput<'static>, pwm::PwmOutput<'static>>;
-type BLDCType = BLDC<
+pub type RGBLedType =
+    RGBLed<pwm::PwmOutput<'static>, pwm::PwmOutput<'static>, pwm::PwmOutput<'static>>;
+pub type BLDCType = BLDC<
     pwm::PwmOutput<'static>,
     pwm::PwmOutput<'static>,
     pwm::PwmOutput<'static>,
@@ -19,7 +20,7 @@ type BLDCType = BLDC<
     pwm::PwmOutput<'static>,
     pwm::PwmOutput<'static>,
 >;
-type RadioType = Radio<SPI0>;
+pub type RadioType = Radio<SPI0>;
 
 const LED_PWM_TOP: u16 = 65535;
 const BLDC_PWM_TOP: u16 = 7499;
@@ -32,13 +33,13 @@ pub struct V2ControlBoard {
     pwm_slice_red_green: Option<Peri<'static, peripherals::PWM_SLICE0>>,
     pwm_slice_blue: Option<Peri<'static, peripherals::PWM_SLICE1>>,
 
-    pwm_slice_lowc_lowb: Option<Peri<'static, peripherals::PWM_SLICE5>>,
-    pwm_slice_lowa_highc: Option<Peri<'static, peripherals::PWM_SLICE6>>,
-    pwm_slice_highb_highc: Option<Peri<'static, peripherals::PWM_SLICE7>>,
-
     red_pin: Option<Peri<'static, peripherals::PIN_16>>,
     green_pin: Option<Peri<'static, peripherals::PIN_17>>,
     blue_pin: Option<Peri<'static, peripherals::PIN_18>>,
+
+    pwm_slice_lowc_lowb: Option<Peri<'static, peripherals::PWM_SLICE5>>,
+    pwm_slice_lowa_highc: Option<Peri<'static, peripherals::PWM_SLICE6>>,
+    pwm_slice_highb_highc: Option<Peri<'static, peripherals::PWM_SLICE7>>,
 
     lowa_pin: Option<Peri<'static, peripherals::PIN_12>>,
     lowb_pin: Option<Peri<'static, peripherals::PIN_11>>,

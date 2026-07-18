@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(defmt::Format, Clone, Copy, PartialEq, Eq)]
 pub struct IrqMask {
     mask: u16,
 }

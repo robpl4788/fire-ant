@@ -1,4 +1,4 @@
-#[derive(defmt::Format, Debug)]
+#[derive(defmt::Format)]
 enum RadioMode {
     Reserved,
     StdbyRc,
@@ -9,7 +9,7 @@ enum RadioMode {
     Error,
 }
 
-#[derive(defmt::Format, Debug)]
+#[derive(defmt::Format)]
 enum RadioCommandStatus {
     Reserved,
     CommandSuccess,
@@ -21,7 +21,7 @@ enum RadioCommandStatus {
     Error,
 }
 
-#[derive(defmt::Format, Debug)]
+#[derive(defmt::Format)]
 pub struct RadioStatus {
     mode: RadioMode,
     command_status: RadioCommandStatus,
